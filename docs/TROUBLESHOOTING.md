@@ -132,6 +132,39 @@ If empty, the experiment run failed early. Check `summary.md` for error counts.
 
 ---
 
+## Interval cache ONNX is stale / incorrect
+
+**Symptom:** After changing a model or base chunk definitions, cached chunk ONNXes produce
+wrong timings.
+
+**Cause:** `artifacts/chunk_cache/{model}/int_{start}_{end}/chunk.onnx` was built from an
+older version of the model weights or chunk boundaries.
+
+**Fix:** Delete the affected interval cache directories:
+```bash
+rm -rf artifacts/chunk_cache/<model>/int_<start>_<end>/
+```
+Or wipe the entire model's interval cache:
+```bash
+rm -rf artifacts/chunk_cache/<model>/
+```
+The interval cache is additive — removing it does not break correctness, only cache warm-up time.
+
+---
+
+## estimated_cold_total_s is 0.0 in Fig.5 CSV
+
+**Symptom:** `mean_total_estimated_cold_s = 0.0` in `fig5_design_time_summary.csv`.
+
+**Cause:** No `timing.json` files exist under `artifacts/chunk_cache/{model}/` because:
+- This is the first live run (interval timing data is populated during live runs, not dry-runs).
+- Or the interval cache was cleared before the run.
+
+**Normal in dry-run mode.** In live mode, timing files are written on the first new export/build
+per interval. On subsequent runs, `estimated_cold_total_s` is populated.
+
+---
+
 ## Memory / OOM during live profiling
 
 **Symptom:** `RuntimeError: CUDA out of memory` during TRT engine build.

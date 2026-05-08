@@ -361,6 +361,12 @@ def summarize_result(
         "dry_run_evaluations": int(result.stats.dry_run_evaluations),
         "builds_triggered": int(result.stats.builds_triggered),
         "exports_triggered": int(result.stats.exports_triggered),
+        "interval_cache_hits": int(result.stats.total_interval_cache_hits),
+        "interval_cache_misses": int(result.stats.total_interval_cache_misses),
+        "total_export_wall_s": float(result.stats.total_export_wall_s),
+        "total_build_wall_s": float(result.stats.total_build_wall_s),
+        "total_profile_wall_s": float(result.stats.total_profile_wall_s),
+        "total_estimated_cold_s": float(result.stats.total_estimated_cold_s),
         "split_triggered": split_count > 0,
         "single_schedulable": single_schedulable,
         "split_required": split_required,
@@ -436,6 +442,12 @@ def aggregate(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "total_real_profiles": sum(int(r["real_profiles"]) for r in items),
             "total_cache_hits": sum(int(r["cache_hits"]) for r in items),
             "total_masks_evaluated": sum(int(r["masks_evaluated"]) for r in items),
+            "total_interval_cache_hits": sum(int(r.get("interval_cache_hits", 0)) for r in items),
+            "total_interval_cache_misses": sum(int(r.get("interval_cache_misses", 0)) for r in items),
+            "mean_total_export_wall_s": avg(items, "total_export_wall_s"),
+            "mean_total_build_wall_s": avg(items, "total_build_wall_s"),
+            "mean_total_profile_wall_s": avg(items, "total_profile_wall_s"),
+            "mean_total_estimated_cold_s": avg(items, "total_estimated_cold_s"),
         })
     return summary
 
@@ -671,7 +683,11 @@ def main() -> int:
         "unschedulable_reason", "wall_clock_s", "optimization_runtime_s",
         "algorithm_iterations", "masks_evaluated", "real_profiles", "cache_hits",
         "skipped_cache_misses", "dry_run_evaluations", "builds_triggered",
-        "exports_triggered", "split_triggered", "single_schedulable",
+        "exports_triggered",
+        "interval_cache_hits", "interval_cache_misses",
+        "total_export_wall_s", "total_build_wall_s", "total_profile_wall_s",
+        "total_estimated_cold_s",
+        "split_triggered", "single_schedulable",
         "split_required", "split_proactive", "early_stopped_no_split",
         "split_task_count",
         "final_total_active_boundaries", "disabled_active_boundaries",
@@ -690,6 +706,9 @@ def main() -> int:
         "mean_real_profiles", "mean_cache_hits", "mean_skipped_cache_misses",
         "mean_builds_triggered", "mean_exports_triggered", "total_real_profiles",
         "total_cache_hits", "total_masks_evaluated",
+        "total_interval_cache_hits", "total_interval_cache_misses",
+        "mean_total_export_wall_s", "mean_total_build_wall_s",
+        "mean_total_profile_wall_s", "mean_total_estimated_cold_s",
     ]
     write_csv(out_dir / "per_taskset_algorithm_results.csv", rows, per_fields)
     write_csv(out_dir / "fig5_design_time_summary.csv", summary_rows, summary_fields)

@@ -46,6 +46,18 @@ class MaskApplicationResult:
     did_profile: bool = False
     dry_run: bool = False
 
+    # Interval-level cache accounting (0 when dry_run or mask-level cache hit)
+    interval_cache_hits: int = 0
+    interval_cache_misses: int = 0
+
+    # Wall-clock timing per pipeline phase (0.0 when not measured)
+    export_wall_s: float = 0.0
+    build_wall_s: float = 0.0
+    profile_wall_s: float = 0.0
+
+    # Cold-cache design-time estimate (None when interval timing data is unavailable)
+    estimated_cold_total_s: Optional[float] = None
+
     # Timing
     selected_chunk_times: List[float] = field(default_factory=list)
     max_block: float = 0.0
@@ -191,6 +203,12 @@ def evaluate_and_apply_mask(
             did_export=eval_result.exported,
             did_build=eval_result.built,
             did_profile=eval_result.profiled,
+            interval_cache_hits=eval_result.interval_cache_hits,
+            interval_cache_misses=eval_result.interval_cache_misses,
+            export_wall_s=float(eval_result.export_wall_s or 0.0),
+            build_wall_s=float(eval_result.build_wall_s or 0.0),
+            profile_wall_s=float(eval_result.profile_wall_s or 0.0),
+            estimated_cold_total_s=eval_result.estimated_cold_total_s,
             selected_chunk_times=chunk_times,
             max_block=max(chunk_times) if chunk_times else 0.0,
             total_gpu=sum(chunk_times),
@@ -238,6 +256,12 @@ def evaluate_and_apply_mask(
         did_export=eval_result.exported,
         did_build=eval_result.built,
         did_profile=eval_result.profiled,
+        interval_cache_hits=eval_result.interval_cache_hits,
+        interval_cache_misses=eval_result.interval_cache_misses,
+        export_wall_s=float(eval_result.export_wall_s or 0.0),
+        build_wall_s=float(eval_result.build_wall_s or 0.0),
+        profile_wall_s=float(eval_result.profile_wall_s or 0.0),
+        estimated_cold_total_s=eval_result.estimated_cold_total_s,
         selected_chunk_times=list(chunk_times),
         max_block=max(chunk_times) if chunk_times else 0.0,
         total_gpu=sum(chunk_times),

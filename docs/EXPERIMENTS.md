@@ -253,6 +253,27 @@ python scripts/30_run_yaml_fig4_experiment.py \
 
 ---
 
+## Interval Cache and Cold-Cache Design-Time Estimation
+
+When running Fig.5 in live mode, the profiling pipeline uses a two-level cache:
+
+1. **Mask-level cache** (`results/evaluations/`): If the exact same mask was already evaluated,
+   the stored result is returned immediately.
+2. **Interval-level cache** (`artifacts/chunk_cache/`): If a chunk with the same `source_chunk_ids`
+   was already exported/built for any previous mask, the ONNX/engine is reused.
+
+`fig5_design_time_summary.csv` includes:
+- `total_interval_cache_hits` / `total_interval_cache_misses` — chunk-level reuse counts
+- `mean_total_export_wall_s`, `mean_total_build_wall_s`, `mean_total_profile_wall_s` — phase wall times
+- `mean_total_estimated_cold_s` — estimated design time if the interval cache had been empty
+
+The cold-cache estimate is computed by summing per-interval `export_wall_s` and
+`build_{precision}_wall_s` from `artifacts/chunk_cache/{model}/int_{start}_{end}/timing.json`
+plus the actual profile time. This allows comparing algorithms by design-time cost even when
+the benchmark benefits from caching across tasksets.
+
+---
+
 ## Reproducing Paper Results
 
 For paper-faithful results, use `configs/yaml/1_GPU0.6-1.0_task8_ov5.yaml` with:

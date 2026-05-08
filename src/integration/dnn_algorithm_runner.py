@@ -132,6 +132,16 @@ class ProfilingStats:
     dry_run_evaluations: int = 0
     skipped_cache_misses: int = 0   # live evals suppressed by LiveProfileBudget
 
+    # Interval-level cache accounting
+    total_interval_cache_hits: int = 0
+    total_interval_cache_misses: int = 0
+
+    # Accumulated wall-clock times across all mask evaluations in this run
+    total_export_wall_s: float = 0.0
+    total_build_wall_s: float = 0.0
+    total_profile_wall_s: float = 0.0
+    total_estimated_cold_s: float = 0.0
+
     def update(self, result: MaskApplicationResult) -> None:
         self.masks_evaluated += 1
         if result.dry_run:
@@ -151,6 +161,13 @@ class ProfilingStats:
             self.builds_triggered += 1
         if result.did_export:
             self.exports_triggered += 1
+        self.total_interval_cache_hits += result.interval_cache_hits
+        self.total_interval_cache_misses += result.interval_cache_misses
+        self.total_export_wall_s += result.export_wall_s
+        self.total_build_wall_s += result.build_wall_s
+        self.total_profile_wall_s += result.profile_wall_s
+        if result.estimated_cold_total_s is not None:
+            self.total_estimated_cold_s += result.estimated_cold_total_s
 
     def to_dict(self) -> dict:
         return {
@@ -161,6 +178,12 @@ class ProfilingStats:
             "exports_triggered": self.exports_triggered,
             "dry_run_evaluations": self.dry_run_evaluations,
             "skipped_cache_misses": self.skipped_cache_misses,
+            "total_interval_cache_hits": self.total_interval_cache_hits,
+            "total_interval_cache_misses": self.total_interval_cache_misses,
+            "total_export_wall_s": self.total_export_wall_s,
+            "total_build_wall_s": self.total_build_wall_s,
+            "total_profile_wall_s": self.total_profile_wall_s,
+            "total_estimated_cold_s": self.total_estimated_cold_s,
         }
 
 

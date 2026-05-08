@@ -67,10 +67,10 @@ TRT engine builds and profiling cache management.
 
 | File | Role |
 |------|------|
-| `config_evaluator.py` | `evaluate_mask()` — builds TRT engine and runs timing |
+| `config_evaluator.py` | `evaluate_mask()` — builds TRT engine and runs timing; manages interval cache |
 | `candidate_space.py` | `load_candidate_space()` — loads dag_aligned_full configs |
-| `compiler.py` | Orchestrates ONNX export + TRT engine build |
-| `profiling_db.py` | `ProfilingDB` — cache for profiling results |
+| `compiler.py` | Orchestrates ONNX export + TRT engine build (subprocess wrappers) |
+| `profiling_db.py` | `ProfilingDB` — flat JSON cache for per-variant profiling results |
 
 ### src/splitting/
 
@@ -109,6 +109,22 @@ This ensures the infeasibility gate is consistent with the policy-constrained se
 2. No `error` field
 3. `per_chunk_gpu_mean_ms` present
 4. `len(per_chunk_gpu_mean_ms) == sum(mask) + 1`
+
+**Interval-level cache**: `artifacts/chunk_cache/{model}/int_{start}_{end}/` stores the ONNX
+and TRT engine for each merged base-chunk interval independently of the mask variant name.
+When two different masks share a chunk with the same `source_chunk_ids = [start..end]`, the
+second mask reuses the cached ONNX/engine rather than rebuilding it.
+- ONNX export is done per-chunk inline (calls `export_module()` directly, not subprocess).
+- Engine build falls back to whole-variant `build_engines()` if the all-or-nothing interval
+  cache check fails for any engine, then populates the interval cache afterwards.
+- `timing.json` inside each interval directory records `export_wall_s` and
+  `build_{precision}_wall_s` for cold-cache design-time estimation.
+- Interval cache is additive: deleting `artifacts/chunk_cache/` does not break correctness.
+
+**Cold-cache design-time estimate**: `EvaluationResult.estimated_cold_total_s` sums the
+per-interval export and build times for all chunks in the mask plus `profile_wall_s`. This
+lets Fig.5 report the design-time cost that would have been paid on a cold interval cache,
+even when the actual run benefited from caching.
 
 ## Task Model Lifecycle
 

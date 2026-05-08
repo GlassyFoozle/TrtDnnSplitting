@@ -11,8 +11,9 @@ Flow
 ----
   mask
   → [selective_split]   generate / save selected config
-  → [compiler]          export merged-chunk ONNXs
-  → [compiler]          build TRT engines
+  → [interval cache]    reuse existing ONNX/engines for known chunk intervals
+  → [export]            export any uncached merged-chunk ONNXs (per-chunk, inline Python)
+  → [build]             build TRT engines (whole-variant; skipped if all from cache)
   → [C++ table4_runner] measure GPU latency
   → [ProfilingDB]       cache result
   → EvaluationResult
@@ -29,6 +30,7 @@ Output locations
   eval JSON:  results/evaluations/<model>/<variant>_<precision>.json
   raw C++:    results/evaluations/<model>/<variant>_<precision>_cpp_raw.json
   cache:      results/optimization/.profiling_cache.json
+  intervals:  artifacts/chunk_cache/<model>/int_{start}_{end}/ (ONNX + engines + timing)
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ import sys
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO))
@@ -85,6 +87,20 @@ class EvaluationResult:
     per_chunk_gpu_p99_ms: Optional[List[float]] = None
     per_chunk_cpu_wall_mean_ms: Optional[List[float]] = None
     per_chunk_cpu_wall_p99_ms: Optional[List[float]] = None
+
+    # Interval cache accounting (populated by evaluate_mask when not a mask-level cache hit)
+    interval_cache_hits: int = 0
+    interval_cache_misses: int = 0
+
+    # Wall-clock time for each pipeline phase (0.0 if phase was skipped via cache)
+    export_wall_s: Optional[float] = None
+    build_wall_s: Optional[float] = None
+    profile_wall_s: Optional[float] = None
+
+    # Cold-cache design-time estimates: what this mask would have cost without caching
+    estimated_cold_export_s: Optional[float] = None
+    estimated_cold_build_s: Optional[float] = None
+    estimated_cold_total_s: Optional[float] = None
 
     # Diagnostics
     notes: str = ""
@@ -168,7 +184,184 @@ def _cpp_table4_output_path(model_name: str, variant_name: str, precision: str) 
     return REPO / "results" / "table4" / f"{model_name}_cpp_{variant_name}_{precision}.json"
 
 
-# ── Cache helpers ──────────────────────────────────────────────────────────────
+# ── Interval cache helpers ─────────────────────────────────────────────────────
+
+def _interval_dir(model_name: str, source_chunk_ids: List[int]) -> Path:
+    start, end = source_chunk_ids[0], source_chunk_ids[-1]
+    return REPO / "artifacts" / "chunk_cache" / model_name / f"int_{start}_{end}"
+
+
+def _interval_onnx_path(model_name: str, source_chunk_ids: List[int]) -> Path:
+    return _interval_dir(model_name, source_chunk_ids) / "chunk.onnx"
+
+
+def _interval_engine_path(model_name: str, source_chunk_ids: List[int], precision: str) -> Path:
+    return _interval_dir(model_name, source_chunk_ids) / f"chunk_{precision}.engine"
+
+
+def _interval_timing_path(model_name: str, source_chunk_ids: List[int]) -> Path:
+    return _interval_dir(model_name, source_chunk_ids) / "timing.json"
+
+
+def _load_interval_timing(model_name: str, source_chunk_ids: List[int]) -> dict:
+    p = _interval_timing_path(model_name, source_chunk_ids)
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_interval_timing(model_name: str, source_chunk_ids: List[int], timing: dict) -> None:
+    p = _interval_timing_path(model_name, source_chunk_ids)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(timing, indent=2))
+
+
+def _export_chunks_with_interval_cache(
+    model_name: str,
+    cfg: dict,
+    groups: List[List[int]],
+    force: bool = False,
+    device: str = "cuda",
+) -> Tuple[int, int, float]:
+    """
+    Export ONNX for each chunk, using interval cache where possible.
+
+    For chunks with a cached ONNX, copies from the interval cache directory to
+    the variant-specific path and skips export_module().  For cache misses,
+    calls export_module() inline (no subprocess) and populates the interval cache.
+
+    Returns (interval_onnx_hits, interval_onnx_misses, total_export_wall_s).
+    """
+    from src.models.registry import build_model
+    from src.splitting.dag_aligned_split import make_dag_aligned_chunks
+    from src.splitting.selective_split import build_merged_module
+    from src.export.onnx_exporter import export_module
+
+    chunk_configs = cfg["chunks"]
+    needs_export: List[int] = []
+
+    for i, grp in enumerate(groups):
+        int_onnx = _interval_onnx_path(model_name, grp)
+        var_onnx = REPO / chunk_configs[i]["onnx"]
+        if not force and int_onnx.exists():
+            var_onnx.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(int_onnx, var_onnx)
+        elif not force and var_onnx.exists():
+            pass  # already present from a previous run
+        else:
+            needs_export.append(i)
+
+    cache_hits = len(groups) - len(needs_export)
+    cache_misses = len(needs_export)
+    total_wall = 0.0
+
+    if not needs_export:
+        print(f"  [interval_cache] all {len(groups)} ONNX(es) from interval cache")
+        return cache_hits, cache_misses, total_wall
+
+    if cache_hits > 0:
+        print(f"  [interval_cache] {cache_hits}/{len(groups)} ONNX(es) from interval cache")
+
+    # Load base model once for all missing chunk exports
+    model = build_model(model_name)
+    base_specs = make_dag_aligned_chunks(model_name, model)
+
+    for i in needs_export:
+        grp = groups[i]
+        chunk_cfg = chunk_configs[i]
+        var_onnx = REPO / chunk_cfg["onnx"]
+        in_shape = tuple(chunk_cfg["input_shape"])
+
+        base_modules = [base_specs[j].module for j in grp]
+        merged_mod, _ = build_merged_module(base_modules, in_shape)
+
+        print(f"  [export] chunk{i} base_chunks={grp}")
+        t0 = time.perf_counter()
+        export_module(merged_mod, in_shape, var_onnx, device=device)
+        wall = time.perf_counter() - t0
+        total_wall += wall
+
+        # Populate interval ONNX cache
+        int_onnx = _interval_onnx_path(model_name, grp)
+        int_onnx.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(var_onnx, int_onnx)
+
+        timing = _load_interval_timing(model_name, grp)
+        timing.update({"model": model_name, "source_chunk_ids": grp, "export_wall_s": wall})
+        _save_interval_timing(model_name, grp, timing)
+
+    return cache_hits, cache_misses, total_wall
+
+
+def _check_interval_engine_cache(
+    model_name: str,
+    cfg: dict,
+    groups: List[List[int]],
+    precision: str,
+    force: bool = False,
+) -> int:
+    """
+    For each chunk, copy engine from interval cache to variant path if available.
+    Returns the number of chunks that were served from the interval cache.
+    """
+    chunk_configs = cfg["chunks"]
+    hits = 0
+    for i, grp in enumerate(groups):
+        int_eng = _interval_engine_path(model_name, grp, precision)
+        var_eng = REPO / chunk_configs[i][f"engine_{precision}"]
+        if not force and int_eng.exists():
+            var_eng.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(int_eng, var_eng)
+            hits += 1
+    return hits
+
+
+def _populate_interval_engine_cache(
+    model_name: str,
+    cfg: dict,
+    groups: List[List[int]],
+    precision: str,
+) -> None:
+    """Copy newly built engines to the interval cache (called after build_engines())."""
+    chunk_configs = cfg["chunks"]
+    for i, grp in enumerate(groups):
+        var_eng = REPO / chunk_configs[i][f"engine_{precision}"]
+        int_eng = _interval_engine_path(model_name, grp, precision)
+        if var_eng.exists() and not int_eng.exists():
+            int_eng.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(var_eng, int_eng)
+
+
+def _estimate_cold_cost(
+    model_name: str,
+    groups: List[List[int]],
+    precision: str,
+    actual_profile_wall_s: float,
+) -> dict:
+    """
+    Sum per-interval recorded export+build times to estimate what this mask would
+    have cost on a completely cold interval cache (no reuse).
+    """
+    total_export = 0.0
+    total_build = 0.0
+    for grp in groups:
+        t = _load_interval_timing(model_name, grp)
+        total_export += float(t.get("export_wall_s") or 0.0)
+        total_build += float(t.get(f"build_{precision}_wall_s") or 0.0)
+    has_data = total_export > 0 or total_build > 0
+    return {
+        "estimated_cold_export_s": total_export if has_data else None,
+        "estimated_cold_build_s": total_build if has_data else None,
+        "estimated_cold_total_s": (
+            total_export + total_build + actual_profile_wall_s if has_data else None
+        ),
+    }
+
+
+# ── Mask-level cache helpers ───────────────────────────────────────────────────
 
 def _load_db() -> "ProfilingDB":
     from src.optimization.profiling_db import ProfilingDB
@@ -473,33 +666,45 @@ def evaluate_mask(
         config_path=str(cfg_path.relative_to(REPO)),
     )
 
-    # ── 5. Export ONNX ────────────────────────────────────────────────────────
+    # ── 5. Export ONNX (per-chunk with interval cache) ───────────────────────
     if export:
-        already = _onnx_exists(cfg)
-        if already and not force:
-            print(f"  ONNX already present — skipping export")
-            result.exported = False
-        else:
-            ok = export_onnx(model_name, variant_name, force=force)
-            result.exported = ok
-            if not ok:
-                result.error = "ONNX export failed"
-                _save_result(result)
-                return result
+        onnx_hits, onnx_misses, onnx_wall = _export_chunks_with_interval_cache(
+            model_name, cfg, groups, force=force
+        )
+        result.export_wall_s = onnx_wall
+        result.interval_cache_hits += onnx_hits
+        result.interval_cache_misses += onnx_misses
+        result.exported = onnx_misses > 0
 
-    # ── 6. Build engines ──────────────────────────────────────────────────────
+        if not _onnx_exists(cfg):
+            result.error = "ONNX export failed"
+            _save_result(result)
+            return result
+
+    # ── 6. Build engines (whole-variant; interval cache check/populate) ───────
     if build:
-        already = _engines_exist(cfg, precision)
-        if already and not force:
-            print(f"  Engines already present — skipping build")
+        eng_hits = _check_interval_engine_cache(model_name, cfg, groups, precision, force)
+        result.interval_cache_hits += eng_hits
+        result.interval_cache_misses += len(groups) - eng_hits
+
+        if _engines_exist(cfg, precision) and not force:
             result.built = False
+            result.build_wall_s = 0.0
+            if eng_hits > 0:
+                print(f"  [interval_cache] {eng_hits}/{len(groups)} engine(s) from interval cache"
+                      f" — skipping build")
+            else:
+                print(f"  Engines already present — skipping build")
         else:
+            t0_build = time.perf_counter()
             ok = build_engines(model_name, variant_name, precision=precision, force=force)
+            result.build_wall_s = time.perf_counter() - t0_build
             result.built = ok
             if not ok:
                 result.error = "Engine build failed"
                 _save_result(result)
                 return result
+            _populate_interval_engine_cache(model_name, cfg, groups, precision)
 
     # ── 7. Profile ────────────────────────────────────────────────────────────
     if not profile:
@@ -510,6 +715,7 @@ def evaluate_mask(
     # C++ preferred
     timing: Optional[dict] = None
     cpp_raw_json: Optional[Path] = None
+    t0_profile = time.perf_counter()
 
     if use_cpp and _CPP_RUNNER.exists():
         # Check if engines are present before running
@@ -545,6 +751,8 @@ def evaluate_mask(
             _save_result(result)
             return result
 
+    result.profile_wall_s = time.perf_counter() - t0_profile
+
     # ── 8. Populate timing fields ─────────────────────────────────────────────
     result.full_gpu_mean_ms = timing.get("full_gpu_mean_ms")
     result.full_gpu_p99_ms = timing.get("full_gpu_p99_ms")
@@ -573,7 +781,13 @@ def evaluate_mask(
     except Exception as e:
         print(f"  [evaluator] WARNING: ProfilingDB update failed: {e}", file=sys.stderr)
 
-    # ── 10. Save and return ───────────────────────────────────────────────────
+    # ── 10. Cold-cache design-time estimate ───────────────────────────────────
+    cold = _estimate_cold_cost(model_name, groups, precision, result.profile_wall_s or 0.0)
+    result.estimated_cold_export_s = cold["estimated_cold_export_s"]
+    result.estimated_cold_build_s = cold["estimated_cold_build_s"]
+    result.estimated_cold_total_s = cold["estimated_cold_total_s"]
+
+    # ── 11. Save and return ───────────────────────────────────────────────────
     result_path = _save_result(result)
     result.result_json_path = str(result_path.relative_to(REPO))
     result_path.write_text(json.dumps(result.to_dict(), indent=2))  # update with path field
