@@ -70,6 +70,9 @@ with indices 0 and 1 (for `cpu_pre_ms` and `cpu_post_ms`), but `c_list` was size
 **Status:** Fixed in `src/rta/task.py` — `c_list` is now sized as
 `max(original_segment_count+1, max_c_idx+1)`.
 
+**Scope:** This fix only affects dry-run / fresh-clone mode where no live profiling has
+been run. In live mode, G blocks are non-zero and the G=0 path is never triggered.
+
 ---
 
 ## pytest failures

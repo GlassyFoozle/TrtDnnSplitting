@@ -121,8 +121,8 @@ results/
 | Model | Chunks (N) | Note |
 |-------|-----------|------|
 | alexnet | 22 | Shipped in `artifacts/split_configs/` |
-| resnet18 | 21 | Shipped in `artifacts/split_configs/` |
-| vgg19 | 37 | Shipped in `artifacts/split_configs/` |
+| resnet18 | 14 | Shipped in `artifacts/split_configs/` |
+| vgg19 | 46 | Shipped in `artifacts/split_configs/` |
 
 Additional models require running `scripts/20_preflight_design.py` to generate split configs.
 

@@ -89,6 +89,12 @@ model; shared across all masks evaluated for that task. Zero in fresh clone (no 
 **SegInfTask construction**: Uses `dummy_G = max(N, 1)` to pass integer-unit validation in
 `InferenceSegment.__init__`, then overrides `base_block_list` with real float ms values.
 
+**K=1 baseline timing**: The all-zero mask (K=1, no split) always uses `sum(base_chunk_times_ms)`
+from the pre-profiled `dag_aligned_full` baseline — never triggers engine export/build/profile.
+In live mode, `evaluate_and_apply_mask` short-circuits any all-zero mask to this baseline path,
+returning `cache_hit=True`. If `base_chunk_times_ms` are all zero in live mode, an error is
+returned directing the user to run `scripts/20_preflight_design.py`.
+
 **K=1 initialization**: All four algorithms start from the all-zero mask (no-split) state:
 - `ss:opt` and `uni:opt`: via `_paper_no_split_gate_ss/uni()`
 - `ss:tol-fb`: explicit `apply_no_split_mask()` at function entry
@@ -132,4 +138,6 @@ evaluate_and_apply_mask(dt, st, mask, chunk_idx, ...)
 
 `convert_UNI_to_SS()` uses `_UNI_block_sources` to reconstruct original C_list and
 G_segment_list. `c_list` size is `max(original_segment_count+1, max_c_idx+1)` to handle
-the G=0 case (no live profiling) where only C sources are present.
+the G=0 case (fresh clone / no live profiling) where G blocks are 0 and are skipped by
+`append_block`, leaving only C sources in `_UNI_block_sources`. Without this fix, the
+second C source (index 1) would IndexError into a single-element `c_list`.

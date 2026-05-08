@@ -105,6 +105,31 @@ def evaluate_and_apply_mask(
 
     k = sum(mask) + 1
 
+    # ── K=1 baseline: all-zero mask always uses pre-profiled dag_aligned_full ─
+    # Never triggers engine export/build/profile — only masks with active
+    # split boundaries (k > 1) should enter the live profiling pipeline.
+    if k == 1:
+        if not dry_run and all(t == 0.0 for t in base_times):
+            return MaskApplicationResult(
+                success=False, mask=list(mask), k_chunks=1,
+                error=(
+                    f"K=1 baseline timing unavailable for {dnn_task.model_name!r}: "
+                    "base_chunk_times_ms are all zero. "
+                    "Run scripts/20_preflight_design.py to profile the base variant first."
+                ),
+            )
+        chunk_times = _apply_mask_to_chunk_times(base_times, mask)
+        _patch_seg_task(seg_task, seg, mask, chunk_times, segment_idx)
+        dnn_task.current_chunk_times_ms = list(chunk_times)
+        return MaskApplicationResult(
+            success=True, mask=list(mask), k_chunks=1,
+            dry_run=dry_run,
+            cache_hit=not dry_run,  # live mode: baseline read counts as cache hit
+            selected_chunk_times=chunk_times,
+            max_block=chunk_times[0] if chunk_times else 0.0,
+            total_gpu=sum(chunk_times),
+        )
+
     # ── dry_run: estimate from base block sums ────────────────────────────────
     if dry_run:
         chunk_times = _apply_mask_to_chunk_times(base_times, mask)
@@ -226,10 +251,14 @@ def apply_no_split_mask(
     seg_task,
     segment_idx: int = 0,
     *,
-    dry_run: bool = True,  # default dry_run for trivial baseline
+    dry_run: bool = False,
     **kwargs,
 ) -> MaskApplicationResult:
-    """Apply K=1 (all boundaries off) mask."""
+    """Apply K=1 (all boundaries off) mask.
+
+    Always uses the pre-profiled dag_aligned_full baseline timing; never
+    triggers engine export/build/profile regardless of dry_run.
+    """
     seg = seg_task.inference_segment_list[segment_idx]
     N = len(seg.base_block_list)
     mask = [0] * (N - 1)
