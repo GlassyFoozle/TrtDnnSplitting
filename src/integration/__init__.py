@@ -1,10 +1,10 @@
 """
-src/integration — Bridge between trt_split_runtime_baseline and DNNSplitting.
+src/integration — Bridge between TensorRT profiling and RTA scheduling analysis.
 
 Converts TensorRT profiling results (CandidateSpace, EvaluationResult) into
-DNNSplitting SegInfTask objects for schedulability analysis (RTA).
+src.rta SegInfTask objects for SS/UNI schedulability analysis.
 
-DNNSplitting is accessed via explicit sys.path management — no source modification.
+RTA is self-contained in src/rta/; no external DNNSplitting repo is required.
 """
 from src.integration.dnn_task import DNNBackedTask
 from src.integration.dnnsplitting_adapter import dnn_task_to_seginftask, get_dnnsplitting_dir, build_task_set_dict

@@ -795,6 +795,16 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
     Follows DNNSplitting _RTA_SS_tol_fb_impl logic with DNN-aware split hook.
     Fallback: split the task with the largest max_G_block (excluding highest-priority).
     """
+    # K=1 initialization: ensure all tasks start from the no-split (all-zero mask)
+    # state before the search loop. In live mode this is cache-first (real K=1
+    # profiling only if not already cached); in dry-run it uses dag_aligned_full
+    # estimates with no GPU profiles triggered.  Consistent with what ss:opt does
+    # via its no-split gate (_run_ss_single).
+    for st in sorted_task_list:
+        dt, _ = task_map[str(st.id)]
+        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
+        result.stats.update(r)
+
     n = len(sorted_task_list)
     R_list = []
     tolerance_list = [math.inf] * n

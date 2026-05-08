@@ -26,6 +26,7 @@ results/yaml_fig4/
 results/fig5/
 results/plots/
 results/dnn_experiments/
+results/dnn_algorithms/
 
 # C++ build
 cpp_runtime/build/

@@ -221,7 +221,11 @@ class SegInfTask:
             if source[0] == "G":
                 original_segment_count = max(original_segment_count, source[1] + 1)
 
-        c_list = [0] * (original_segment_count + 1)
+        max_c_idx = max(
+            (source[1] for source in block_sources if source[0] == "C"),
+            default=0,
+        )
+        c_list = [0] * max(original_segment_count + 1, max_c_idx + 1)
         g_blocks_by_segment = [[] for _ in range(original_segment_count)]
         uni_pos_by_g_block = {}
         for pos, (value, source) in enumerate(zip(uni_segment.base_block_list, block_sources)):

@@ -1,0 +1,135 @@
+# TrtDnnSplitting — End-to-End Architecture
+
+## High-Level Data Flow
+
+```
+Taskset JSON
+    │
+    ▼
+generate_dnn_taskset()              ← dnn_taskset_loader.py
+    │  Loads per-chunk base times from artifacts/split_configs/*/dag_aligned_full.json
+    │  Falls back to zeros if no profiling available (dry-run safe)
+    ▼
+DNNBackedTask list
+    │
+    ▼
+build_task_set_dict()               ← dnnsplitting_adapter.py
+    │  Creates SegInfTask (src.rta.task) for each DNN task
+    │  base_block_list = base_chunk_times_ms from dag_aligned_full
+    ▼
+run_dnn_rta_algorithm()             ← dnn_algorithm_runner.py
+    │
+    ├─ _dispatch_ss() ──────────────────────────────────────────────────────┐
+    │      ├─ ss:tol-fb  → _run_ss_tol_fb()                                │
+    │      └─ ss:opt     → _paper_no_split_gate_ss() → _run_ss_opt_paper() │
+    │                                                                       │
+    └─ _dispatch_uni() ─────────────────────────────────────────────────────┘
+           ├─ uni:tol-fb → _run_uni_tol_fb()
+           └─ uni:opt    → _paper_no_split_gate_uni() → _run_uni_opt_paper()
+                │
+                ▼
+        evaluate_and_apply_mask()   ← mask_applicator.py
+                │
+                ├─ dry_run=True  → _apply_mask_to_chunk_times() + _patch_seg_task()
+                └─ dry_run=False → evaluate_mask() → TRT engine build + profile
+```
+
+## Module Map
+
+### src/rta/
+
+Self-contained RTA ported from the DNNSplitting paper. No external dependencies.
+
+| File | Description |
+|------|-------------|
+| `task.py` | `SegInfTask`, `InferenceSegment` — task model; SS↔UNI conversion |
+| `analysis.py` | `get_SS_R()`, `get_UNI_R_and_K()`, `convert_task_list_to_SS/UNI()`, RTA core |
+
+### src/integration/
+
+Bridge layer: loads DNN tasks, runs algorithms, collects results.
+
+| File | Role |
+|------|------|
+| `dnn_task.py` | `DNNBackedTask` dataclass |
+| `dnn_taskset_loader.py` | Parse taskset JSON → `DNNBackedTask` list |
+| `dnn_taskset_generator.py` | Generate single taskset JSON from params |
+| `dnn_workload_generator.py` | `WorkloadConfig` + `generate_tasksets()` for batch generation |
+| `dnnsplitting_adapter.py` | `dnn_task_to_seginftask()`, `build_task_set_dict()` |
+| `mask_applicator.py` | `evaluate_and_apply_mask()`, dry/live dispatch |
+| `dnn_algorithm_runner.py` | All four algorithm implementations + dispatcher |
+| `split_point_policy.py` | `get_enabled_boundaries()`, `apply_policy_to_mask()` |
+| `paper_style_search.py` | `search_optimal_ss_mask()`, `search_heuristic_ss_mask()`, etc. |
+
+### src/optimization/
+
+TRT engine builds and profiling cache management.
+
+| File | Role |
+|------|------|
+| `config_evaluator.py` | `evaluate_mask()` — builds TRT engine and runs timing |
+| `candidate_space.py` | `load_candidate_space()` — loads dag_aligned_full configs |
+| `compiler.py` | Orchestrates ONNX export + TRT engine build |
+| `profiling_db.py` | `ProfilingDB` — cache for profiling results |
+
+### src/splitting/
+
+Split-point generation and mask computation.
+
+| File | Role |
+|------|------|
+| `dag_aligned_splitter.py` | Enumerate boundaries aligned to DNN layer graph |
+| `selective_splitter.py` | Apply selective split patterns |
+
+## Key Invariants
+
+**base_chunk_times_ms**: Per-chunk GPU times from `dag_aligned_full.json`. Loaded once per
+model; shared across all masks evaluated for that task. Zero in fresh clone (no live profiling).
+
+**SegInfTask construction**: Uses `dummy_G = max(N, 1)` to pass integer-unit validation in
+`InferenceSegment.__init__`, then overrides `base_block_list` with real float ms values.
+
+**K=1 initialization**: All four algorithms start from the all-zero mask (no-split) state:
+- `ss:opt` and `uni:opt`: via `_paper_no_split_gate_ss/uni()`
+- `ss:tol-fb`: explicit `apply_no_split_mask()` at function entry
+- `uni:tol-fb`: implicit (no-split is the initial task state before the first tolerance check)
+
+**Policy-limited feasibility probe**: `_run_ss_opt_paper()` and `_run_ss_heu_paper()` use
+`apply_policy_to_mask([1]*(N-1), enabled)` as the full-split probe — not the raw all-ones mask.
+This ensures the infeasibility gate is consistent with the policy-constrained search space.
+
+**Cache validity (is_mask_cached)**: Returns `True` only if:
+1. JSON parses successfully
+2. No `error` field
+3. `per_chunk_gpu_mean_ms` present
+4. `len(per_chunk_gpu_mean_ms) == sum(mask) + 1`
+
+## Task Model Lifecycle
+
+```
+DNNBackedTask
+  ├─ base_chunk_times_ms  [N floats]   ← from dag_aligned_full.json
+  ├─ initial_mask         [N-1 ints]   ← 0 = no split (initial state)
+  └─ candidate_count      N
+
+dnn_task_to_seginftask(dt, splitting_config)
+  ↓
+SegInfTask
+  ├─ C_list       [cpu_pre_ms, cpu_post_ms]
+  ├─ inference_segment_list[0].base_block_list  [N floats]
+  └─ G = sum(base_chunk_times_ms)   (0 if no live profiling)
+
+evaluate_and_apply_mask(dt, st, mask, chunk_idx, ...)
+  └─ _patch_seg_task(task, chunk_times)
+       ├─ seg.G_block_list = list(chunk_times)
+       └─ task.G_segment_list[0] = list(chunk_times)
+```
+
+## SS ↔ UNI Conversion
+
+`convert_SS_to_UNI()` merges all C and G blocks into a single UNI segment, tracking
+`_UNI_block_sources` metadata for back-conversion. Blocks with value ≤ 0 are skipped.
+
+`convert_UNI_to_SS()` uses `_UNI_block_sources` to reconstruct original C_list and
+G_segment_list. `c_list` size is `max(original_segment_count+1, max_c_idx+1)` to handle
+the G=0 case (no live profiling) where only C sources are present.
