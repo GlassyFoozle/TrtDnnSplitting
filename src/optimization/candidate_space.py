@@ -120,6 +120,18 @@ def load_candidate_space(
             except Exception:
                 pass
 
+    # Priority 3: dry-run fallback — equal per-chunk allocation from known Jetson reference
+    # values. These match the p99 totals from dag_aligned_full profiling on Jetson AGX Orin
+    # (FP32). Without this, fresh-clone dry-run analysis sees G=0 while task generation
+    # used _DRY_RUN_BASE_WCET_MS for periods — an inconsistency that makes every taskset
+    # trivially schedulable at K=1 with no splitting triggered.
+    if all(t == 0.0 for t in per_chunk_means):
+        _DRY_RUN_WCET_MS = {"alexnet": 1.754, "resnet18": 1.037, "vgg19": 7.562}
+        wcet = _DRY_RUN_WCET_MS.get(model_name.lower())
+        if wcet is not None:
+            per_chunk_means = [wcet / n] * n
+            per_chunk_p99 = [wcet / n] * n
+
     return CandidateSpace(
         model_name=model_name,
         base_variant=_BASE_VARIANT,
