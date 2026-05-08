@@ -89,13 +89,18 @@ class EvaluationResult:
     per_chunk_cpu_wall_p99_ms: Optional[List[float]] = None
 
     # Interval cache accounting (populated by evaluate_mask when not a mask-level cache hit)
-    interval_cache_hits: int = 0
-    interval_cache_misses: int = 0
+    interval_cache_hits: int = 0       # combined ONNX + engine hits
+    interval_cache_misses: int = 0     # combined ONNX + engine misses
+    interval_onnx_cache_hits: int = 0
+    interval_onnx_cache_misses: int = 0
+    interval_engine_cache_hits: int = 0
+    interval_engine_cache_misses: int = 0
 
     # Wall-clock time for each pipeline phase (0.0 if phase was skipped via cache)
     export_wall_s: Optional[float] = None
     build_wall_s: Optional[float] = None
     profile_wall_s: Optional[float] = None
+    interval_engine_build_wall_s: float = 0.0
 
     # Cold-cache design-time estimates: what this mask would have cost without caching
     estimated_cold_export_s: Optional[float] = None
@@ -333,6 +338,66 @@ def _populate_interval_engine_cache(
         if var_eng.exists() and not int_eng.exists():
             int_eng.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(var_eng, int_eng)
+
+
+def _build_engines_with_interval_cache(
+    model_name: str,
+    cfg: dict,
+    groups: List[List[int]],
+    precision: str,
+    force: bool = False,
+) -> Tuple[int, int, float]:
+    """
+    Build TRT engines per-chunk, using interval cache where possible.
+
+    For each chunk: if interval engine cache exists, copy it. Otherwise call
+    build_single_engine() and populate the interval cache with the result + timing.
+
+    Returns (engine_cache_hits, engine_cache_misses, total_build_wall_s).
+    Fails fast (returns immediately) if any per-chunk build fails.
+    """
+    from src.optimization.compiler import build_single_engine
+
+    chunk_configs = cfg["chunks"]
+    hits = 0
+    misses = 0
+    total_wall = 0.0
+
+    for i, grp in enumerate(groups):
+        int_eng = _interval_engine_path(model_name, grp, precision)
+        var_eng = REPO / chunk_configs[i][f"engine_{precision}"]
+        var_onnx = REPO / chunk_configs[i]["onnx"]
+
+        if not force and int_eng.exists():
+            var_eng.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(int_eng, var_eng)
+            hits += 1
+            print(f"  [interval_cache] chunk{i} engine from cache (base_chunks={grp})")
+        elif not force and var_eng.exists():
+            # Present from a previous run; backfill interval cache
+            if not int_eng.exists():
+                int_eng.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(var_eng, int_eng)
+            hits += 1
+        else:
+            # Cache miss: build per-chunk via trtexec
+            ok, wall = build_single_engine(var_onnx, var_eng, precision=precision)
+            total_wall += wall
+            if not ok:
+                return hits, misses + 1, total_wall
+            misses += 1
+            # Populate interval cache with engine + build timing
+            int_eng.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(var_eng, int_eng)
+            timing = _load_interval_timing(model_name, grp)
+            timing.update({f"build_{precision}_wall_s": wall})
+            _save_interval_timing(model_name, grp, timing)
+
+    if misses > 0:
+        print(f"  [interval_cache] {hits}/{len(groups)} engine(s) from cache, {misses} built")
+    elif hits > 0:
+        print(f"  [interval_cache] all {hits}/{len(groups)} engine(s) from interval cache")
+    return hits, misses, total_wall
 
 
 def _estimate_cold_cost(
@@ -592,7 +657,7 @@ def evaluate_mask(
         load_base_config, parse_boundary_mask,
         make_selected_split_config, save_selected_config,
     )
-    from src.optimization.compiler import export_onnx, build_engines, _engines_exist, _onnx_exists
+    from src.optimization.compiler import export_onnx, _engines_exist, _onnx_exists
 
     # ── 1. Parse mask ─────────────────────────────────────────────────────────
     base_cfg = load_base_config(model_name, base_variant)
@@ -672,6 +737,8 @@ def evaluate_mask(
             model_name, cfg, groups, force=force
         )
         result.export_wall_s = onnx_wall
+        result.interval_onnx_cache_hits = onnx_hits
+        result.interval_onnx_cache_misses = onnx_misses
         result.interval_cache_hits += onnx_hits
         result.interval_cache_misses += onnx_misses
         result.exported = onnx_misses > 0
@@ -681,30 +748,23 @@ def evaluate_mask(
             _save_result(result)
             return result
 
-    # ── 6. Build engines (whole-variant; interval cache check/populate) ───────
+    # ── 6. Build engines (per-chunk with interval cache) ─────────────────────
     if build:
-        eng_hits = _check_interval_engine_cache(model_name, cfg, groups, precision, force)
+        eng_hits, eng_misses, eng_build_wall = _build_engines_with_interval_cache(
+            model_name, cfg, groups, precision, force
+        )
+        result.interval_engine_cache_hits = eng_hits
+        result.interval_engine_cache_misses = eng_misses
+        result.interval_engine_build_wall_s = eng_build_wall
         result.interval_cache_hits += eng_hits
-        result.interval_cache_misses += len(groups) - eng_hits
+        result.interval_cache_misses += eng_misses
+        result.build_wall_s = eng_build_wall
+        result.built = eng_misses > 0
 
-        if _engines_exist(cfg, precision) and not force:
-            result.built = False
-            result.build_wall_s = 0.0
-            if eng_hits > 0:
-                print(f"  [interval_cache] {eng_hits}/{len(groups)} engine(s) from interval cache"
-                      f" — skipping build")
-            else:
-                print(f"  Engines already present — skipping build")
-        else:
-            t0_build = time.perf_counter()
-            ok = build_engines(model_name, variant_name, precision=precision, force=force)
-            result.build_wall_s = time.perf_counter() - t0_build
-            result.built = ok
-            if not ok:
-                result.error = "Engine build failed"
-                _save_result(result)
-                return result
-            _populate_interval_engine_cache(model_name, cfg, groups, precision)
+        if not _engines_exist(cfg, precision):
+            result.error = "Engine build failed"
+            _save_result(result)
+            return result
 
     # ── 7. Profile ────────────────────────────────────────────────────────────
     if not profile:

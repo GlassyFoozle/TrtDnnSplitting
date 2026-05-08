@@ -12,10 +12,12 @@ Supports dry_run (print commands without executing) and caching
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 REPO = Path(__file__).resolve().parent.parent.parent
 
@@ -109,6 +111,65 @@ def build_engines(
         print(f"  [compiler] Engine build FAILED (exit {result.returncode})", file=sys.stderr)
         return False
     return True
+
+
+def build_single_engine(
+    onnx_path: Path,
+    engine_path: Path,
+    precision: str = "fp32",
+    dry_run: bool = False,
+) -> Tuple[bool, float]:
+    """
+    Build a single TRT engine from an ONNX file via trtexec.
+
+    Returns (success, wall_seconds). On dry_run returns (True, 0.0).
+    Falls back gracefully when trtexec is not present (non-Jetson).
+    """
+    from pathlib import Path as _Path
+    trtexec = _Path(os.environ.get("TRTEXEC", "/usr/src/tensorrt/bin/trtexec"))
+    if not trtexec.exists():
+        print(
+            f"  [compiler] trtexec not found at {trtexec} — cannot build {onnx_path.name}",
+            file=sys.stderr,
+        )
+        return False, 0.0
+
+    if not onnx_path.exists():
+        print(f"  [compiler] ONNX not found: {onnx_path}", file=sys.stderr)
+        return False, 0.0
+
+    engine_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(trtexec),
+        f"--onnx={onnx_path}",
+        f"--saveEngine={engine_path}",
+        "--noDataTransfers",
+        "--iterations=100",
+    ]
+    if precision == "fp16":
+        cmd.append("--fp16")
+
+    if dry_run:
+        print(f"  [DRY-RUN] build single engine: {' '.join(cmd)}")
+        return True, 0.0
+
+    log_dir = REPO / "artifacts" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{onnx_path.stem}_{precision}.log"
+
+    print(f"  [build] {onnx_path.name} -> {engine_path.name}")
+    t0 = time.perf_counter()
+    with log_path.open("w") as lf:
+        proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)
+    wall = time.perf_counter() - t0
+
+    if proc.returncode != 0:
+        print(
+            f"  [compiler] Engine build FAILED for {onnx_path.name}. See {log_path}",
+            file=sys.stderr,
+        )
+        return False, wall
+    return True, wall
 
 
 def compile_config(

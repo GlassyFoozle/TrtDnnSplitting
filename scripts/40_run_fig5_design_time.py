@@ -34,6 +34,27 @@ from src.integration.split_point_policy import get_enabled_boundaries
 
 AlgorithmSpec = Tuple[str, str]
 
+_ALGORITHM_SETS: Dict[str, List[str]] = {
+    "main4": ["ss:tol-fb", "uni:tol-fb", "ss:opt", "uni:opt"],
+    "full8": ["ss:opt", "ss:heu", "ss:tol", "ss:tol-fb",
+              "uni:opt", "uni:heu", "uni:tol", "uni:tol-fb"],
+    "ss_only": ["ss:opt", "ss:heu", "ss:tol", "ss:tol-fb"],
+    "uni_only": ["uni:opt", "uni:heu", "uni:tol", "uni:tol-fb"],
+}
+
+# Accept paper-style labels (e.g. "SS-tol-fb") as aliases for canonical forms
+_LABEL_ALIASES: Dict[str, str] = {
+    "SS-opt": "ss:opt", "SS-heu": "ss:heu", "SS-tol": "ss:tol", "SS-tol-fb": "ss:tol-fb",
+    "UNI-opt": "uni:opt", "UNI-heu": "uni:heu", "UNI-tol": "uni:tol", "UNI-tol-fb": "uni:tol-fb",
+    "ss-opt": "ss:opt", "ss-heu": "ss:heu", "ss-tol": "ss:tol", "ss-tol-fb": "ss:tol-fb",
+    "uni-opt": "uni:opt", "uni-heu": "uni:heu", "uni-tol": "uni:tol", "uni-tol-fb": "uni:tol-fb",
+}
+
+_KNOWN_ALGORITHMS: Dict[str, set] = {
+    "ss": {"single", "max", "tol", "tol-fb", "heu", "heu-k", "opt", "opt-k"},
+    "uni": {"single", "max", "tol", "tol-fb", "heu", "opt"},
+}
+
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
@@ -47,7 +68,17 @@ def parse_args() -> argparse.Namespace:
         "--algorithms",
         nargs="+",
         default=["uni:opt", "uni:heu", "ss:tol-fb"],
-        help="Algorithms as model:algorithm, e.g. uni:opt ss:tol-fb",
+        help=(
+            "Algorithms as model:algorithm (e.g. uni:opt ss:tol-fb) or paper labels "
+            "(e.g. SS-tol-fb UNI-opt). Overridden by --algorithm-set."
+        ),
+    )
+    ap.add_argument(
+        "--algorithm-set",
+        choices=list(_ALGORITHM_SETS.keys()),
+        default=None,
+        help="Predefined algorithm set (overrides --algorithms). "
+             "main4={SS-tol-fb,UNI-tol-fb,SS-opt,UNI-opt}, full8=all 8 variants.",
     )
     ap.add_argument("--precision", default="fp32", choices=["fp32", "fp16"])
     ap.add_argument("--wcet-metric", default="p99", choices=["p99", "mean"], dest="wcet_metric")
@@ -123,11 +154,23 @@ def parse_args() -> argparse.Namespace:
 def parse_algorithms(values: Iterable[str]) -> List[AlgorithmSpec]:
     out: List[AlgorithmSpec] = []
     for value in values:
-        if ":" in value:
-            model, algorithm = value.split(":", 1)
+        normalized = _LABEL_ALIASES.get(value, value)
+        if ":" in normalized:
+            model, algorithm = normalized.split(":", 1)
         else:
-            model, algorithm = "ss", value
-        out.append((model.lower(), algorithm.lower()))
+            model, algorithm = "ss", normalized
+        model, algorithm = model.lower(), algorithm.lower()
+        if model not in _KNOWN_ALGORITHMS:
+            raise ValueError(
+                f"Unknown RTA model {model!r} in {value!r}. Use 'ss' or 'uni'."
+            )
+        if algorithm not in _KNOWN_ALGORITHMS[model]:
+            known = ", ".join(sorted(_KNOWN_ALGORITHMS[model]))
+            raise ValueError(
+                f"Unknown {model.upper()} algorithm {algorithm!r} in {value!r}. "
+                f"Known: {known}"
+            )
+        out.append((model, algorithm))
     return out
 
 
@@ -355,6 +398,7 @@ def summarize_result(
         "optimization_runtime_s": float(result.duration_s),
         "algorithm_iterations": int(result.algorithm_iterations),
         "masks_evaluated": int(result.stats.masks_evaluated),
+        "baseline_k1_hits": int(result.stats.baseline_k1_hits),
         "real_profiles": int(result.stats.real_profiles),
         "cache_hits": int(result.stats.cache_hits),
         "skipped_cache_misses": int(result.stats.skipped_cache_misses),
@@ -363,6 +407,11 @@ def summarize_result(
         "exports_triggered": int(result.stats.exports_triggered),
         "interval_cache_hits": int(result.stats.total_interval_cache_hits),
         "interval_cache_misses": int(result.stats.total_interval_cache_misses),
+        "interval_onnx_cache_hits": int(result.stats.total_interval_onnx_cache_hits),
+        "interval_onnx_cache_misses": int(result.stats.total_interval_onnx_cache_misses),
+        "interval_engine_cache_hits": int(result.stats.total_interval_engine_cache_hits),
+        "interval_engine_cache_misses": int(result.stats.total_interval_engine_cache_misses),
+        "interval_engine_build_wall_s": float(result.stats.total_interval_engine_build_wall_s),
         "total_export_wall_s": float(result.stats.total_export_wall_s),
         "total_build_wall_s": float(result.stats.total_build_wall_s),
         "total_profile_wall_s": float(result.stats.total_profile_wall_s),
@@ -442,8 +491,13 @@ def aggregate(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "total_real_profiles": sum(int(r["real_profiles"]) for r in items),
             "total_cache_hits": sum(int(r["cache_hits"]) for r in items),
             "total_masks_evaluated": sum(int(r["masks_evaluated"]) for r in items),
+            "total_baseline_k1_hits": sum(int(r.get("baseline_k1_hits", 0)) for r in items),
+            "mean_baseline_k1_hits": avg(items, "baseline_k1_hits"),
             "total_interval_cache_hits": sum(int(r.get("interval_cache_hits", 0)) for r in items),
             "total_interval_cache_misses": sum(int(r.get("interval_cache_misses", 0)) for r in items),
+            "total_interval_onnx_cache_hits": sum(int(r.get("interval_onnx_cache_hits", 0)) for r in items),
+            "total_interval_engine_cache_hits": sum(int(r.get("interval_engine_cache_hits", 0)) for r in items),
+            "mean_interval_engine_build_wall_s": avg(items, "interval_engine_build_wall_s"),
             "mean_total_export_wall_s": avg(items, "total_export_wall_s"),
             "mean_total_build_wall_s": avg(items, "total_build_wall_s"),
             "mean_total_profile_wall_s": avg(items, "total_profile_wall_s"),
@@ -557,6 +611,8 @@ def main() -> int:
     out_dir = Path(args.output_dir) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.algorithm_set is not None:
+        args.algorithms = _ALGORITHM_SETS[args.algorithm_set]
     algorithms = parse_algorithms(args.algorithms)
     tasksets = prepare_tasksets(args, out_dir)
     if not tasksets:
@@ -654,6 +710,7 @@ def main() -> int:
                 f"  {'SCHED' if result.schedulable else 'MISS '} "
                 f"wall={wall:.2f}s masks={result.stats.masks_evaluated} "
                 f"real={result.stats.real_profiles} cache={result.stats.cache_hits} "
+                f"k1={result.stats.baseline_k1_hits} "
                 f"skipped={result.stats.skipped_cache_misses} "
                 f"split={row['split_triggered']}"
                 f" elapsed={time.time() - experiment_t0:.1f}s",
@@ -681,10 +738,14 @@ def main() -> int:
         "taskset", "taskset_path", "algorithm_label", "rta_model", "algorithm",
         "schedulable", "analysis_error", "error_type", "error_message",
         "unschedulable_reason", "wall_clock_s", "optimization_runtime_s",
-        "algorithm_iterations", "masks_evaluated", "real_profiles", "cache_hits",
+        "algorithm_iterations", "masks_evaluated", "baseline_k1_hits",
+        "real_profiles", "cache_hits",
         "skipped_cache_misses", "dry_run_evaluations", "builds_triggered",
         "exports_triggered",
         "interval_cache_hits", "interval_cache_misses",
+        "interval_onnx_cache_hits", "interval_onnx_cache_misses",
+        "interval_engine_cache_hits", "interval_engine_cache_misses",
+        "interval_engine_build_wall_s",
         "total_export_wall_s", "total_build_wall_s", "total_profile_wall_s",
         "total_estimated_cold_s",
         "split_triggered", "single_schedulable",
@@ -703,10 +764,13 @@ def main() -> int:
         "policy_violation_count", "mean_wall_clock_s", "median_wall_clock_s",
         "min_wall_clock_s", "max_wall_clock_s", "p95_wall_clock_s",
         "mean_optimization_runtime_s", "mean_masks_evaluated",
+        "mean_baseline_k1_hits", "total_baseline_k1_hits",
         "mean_real_profiles", "mean_cache_hits", "mean_skipped_cache_misses",
         "mean_builds_triggered", "mean_exports_triggered", "total_real_profiles",
         "total_cache_hits", "total_masks_evaluated",
         "total_interval_cache_hits", "total_interval_cache_misses",
+        "total_interval_onnx_cache_hits", "total_interval_engine_cache_hits",
+        "mean_interval_engine_build_wall_s",
         "mean_total_export_wall_s", "mean_total_build_wall_s",
         "mean_total_profile_wall_s", "mean_total_estimated_cold_s",
     ]

@@ -45,15 +45,21 @@ class MaskApplicationResult:
     did_build: bool = False
     did_profile: bool = False
     dry_run: bool = False
+    is_k1_baseline: bool = False  # True when K=1 no-split shortcut was taken
 
     # Interval-level cache accounting (0 when dry_run or mask-level cache hit)
-    interval_cache_hits: int = 0
-    interval_cache_misses: int = 0
+    interval_cache_hits: int = 0       # combined ONNX + engine hits
+    interval_cache_misses: int = 0     # combined ONNX + engine misses
+    interval_onnx_cache_hits: int = 0
+    interval_onnx_cache_misses: int = 0
+    interval_engine_cache_hits: int = 0
+    interval_engine_cache_misses: int = 0
 
     # Wall-clock timing per pipeline phase (0.0 when not measured)
     export_wall_s: float = 0.0
     build_wall_s: float = 0.0
     profile_wall_s: float = 0.0
+    interval_engine_build_wall_s: float = 0.0
 
     # Cold-cache design-time estimate (None when interval timing data is unavailable)
     estimated_cold_total_s: Optional[float] = None
@@ -124,6 +130,7 @@ def evaluate_and_apply_mask(
         if not dry_run and all(t == 0.0 for t in base_times):
             return MaskApplicationResult(
                 success=False, mask=list(mask), k_chunks=1,
+                is_k1_baseline=True,
                 error=(
                     f"K=1 baseline timing unavailable for {dnn_task.model_name!r}: "
                     "base_chunk_times_ms are all zero. "
@@ -135,6 +142,7 @@ def evaluate_and_apply_mask(
         dnn_task.current_chunk_times_ms = list(chunk_times)
         return MaskApplicationResult(
             success=True, mask=list(mask), k_chunks=1,
+            is_k1_baseline=True,
             dry_run=dry_run,
             cache_hit=not dry_run,  # live mode: baseline read counts as cache hit
             selected_chunk_times=chunk_times,
@@ -205,6 +213,11 @@ def evaluate_and_apply_mask(
             did_profile=eval_result.profiled,
             interval_cache_hits=eval_result.interval_cache_hits,
             interval_cache_misses=eval_result.interval_cache_misses,
+            interval_onnx_cache_hits=eval_result.interval_onnx_cache_hits,
+            interval_onnx_cache_misses=eval_result.interval_onnx_cache_misses,
+            interval_engine_cache_hits=eval_result.interval_engine_cache_hits,
+            interval_engine_cache_misses=eval_result.interval_engine_cache_misses,
+            interval_engine_build_wall_s=float(eval_result.interval_engine_build_wall_s),
             export_wall_s=float(eval_result.export_wall_s or 0.0),
             build_wall_s=float(eval_result.build_wall_s or 0.0),
             profile_wall_s=float(eval_result.profile_wall_s or 0.0),
@@ -258,6 +271,11 @@ def evaluate_and_apply_mask(
         did_profile=eval_result.profiled,
         interval_cache_hits=eval_result.interval_cache_hits,
         interval_cache_misses=eval_result.interval_cache_misses,
+        interval_onnx_cache_hits=eval_result.interval_onnx_cache_hits,
+        interval_onnx_cache_misses=eval_result.interval_onnx_cache_misses,
+        interval_engine_cache_hits=eval_result.interval_engine_cache_hits,
+        interval_engine_cache_misses=eval_result.interval_engine_cache_misses,
+        interval_engine_build_wall_s=float(eval_result.interval_engine_build_wall_s),
         export_wall_s=float(eval_result.export_wall_s or 0.0),
         build_wall_s=float(eval_result.build_wall_s or 0.0),
         profile_wall_s=float(eval_result.profile_wall_s or 0.0),

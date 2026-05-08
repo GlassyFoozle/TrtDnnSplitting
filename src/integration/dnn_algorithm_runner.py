@@ -125,6 +125,7 @@ _analysis_module.ceil_div_with_context = _ceil_div_int
 @dataclass
 class ProfilingStats:
     masks_evaluated: int = 0
+    baseline_k1_hits: int = 0        # K=1 no-split baseline evaluations (never TRT)
     cache_hits: int = 0
     real_profiles: int = 0
     builds_triggered: int = 0
@@ -135,15 +136,24 @@ class ProfilingStats:
     # Interval-level cache accounting
     total_interval_cache_hits: int = 0
     total_interval_cache_misses: int = 0
+    total_interval_onnx_cache_hits: int = 0
+    total_interval_onnx_cache_misses: int = 0
+    total_interval_engine_cache_hits: int = 0
+    total_interval_engine_cache_misses: int = 0
 
     # Accumulated wall-clock times across all mask evaluations in this run
     total_export_wall_s: float = 0.0
     total_build_wall_s: float = 0.0
     total_profile_wall_s: float = 0.0
+    total_interval_engine_build_wall_s: float = 0.0
     total_estimated_cold_s: float = 0.0
 
     def update(self, result: MaskApplicationResult) -> None:
         self.masks_evaluated += 1
+        if result.is_k1_baseline:
+            # K=1 baseline uses pre-profiled dag_aligned_full; no TRT pipeline
+            self.baseline_k1_hits += 1
+            return
         if result.dry_run:
             self.dry_run_evaluations += 1
         elif result.cache_hit:
@@ -163,6 +173,11 @@ class ProfilingStats:
             self.exports_triggered += 1
         self.total_interval_cache_hits += result.interval_cache_hits
         self.total_interval_cache_misses += result.interval_cache_misses
+        self.total_interval_onnx_cache_hits += result.interval_onnx_cache_hits
+        self.total_interval_onnx_cache_misses += result.interval_onnx_cache_misses
+        self.total_interval_engine_cache_hits += result.interval_engine_cache_hits
+        self.total_interval_engine_cache_misses += result.interval_engine_cache_misses
+        self.total_interval_engine_build_wall_s += result.interval_engine_build_wall_s
         self.total_export_wall_s += result.export_wall_s
         self.total_build_wall_s += result.build_wall_s
         self.total_profile_wall_s += result.profile_wall_s
@@ -172,6 +187,7 @@ class ProfilingStats:
     def to_dict(self) -> dict:
         return {
             "masks_evaluated": self.masks_evaluated,
+            "baseline_k1_hits": self.baseline_k1_hits,
             "cache_hits": self.cache_hits,
             "real_profiles": self.real_profiles,
             "builds_triggered": self.builds_triggered,
@@ -180,6 +196,11 @@ class ProfilingStats:
             "skipped_cache_misses": self.skipped_cache_misses,
             "total_interval_cache_hits": self.total_interval_cache_hits,
             "total_interval_cache_misses": self.total_interval_cache_misses,
+            "total_interval_onnx_cache_hits": self.total_interval_onnx_cache_hits,
+            "total_interval_onnx_cache_misses": self.total_interval_onnx_cache_misses,
+            "total_interval_engine_cache_hits": self.total_interval_engine_cache_hits,
+            "total_interval_engine_cache_misses": self.total_interval_engine_cache_misses,
+            "total_interval_engine_build_wall_s": self.total_interval_engine_build_wall_s,
             "total_export_wall_s": self.total_export_wall_s,
             "total_build_wall_s": self.total_build_wall_s,
             "total_profile_wall_s": self.total_profile_wall_s,
@@ -1355,8 +1376,14 @@ def _run_uni_single(sorted_task_list, task_map, result, eval_kwargs):
     Convert SS→UNI, apply no-split in UNI space, run UNI RTA.
 
     No-split in UNI space: only the fixed CPU-GPU boundaries are active.
-    No TRT evaluation (use base block sum estimates).
+    K=1 apply ensures consistent baseline_k1_hits accounting vs _run_ss_single.
     """
+    # K=1 initialization: consistent with _run_ss_single accounting
+    for st in sorted_task_list:
+        dt, _ = task_map[str(st.id)]
+        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
+        result.stats.update(r)
+
     uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
 
     schedulable = True
@@ -1428,6 +1455,12 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
       UNI G_block_list[1..K-2] = measured_gpu_chunk[1..K-2]
       UNI G_block_list[K-1] = measured_gpu_chunk[K-1] + cpu_post
     """
+    # K=1 initialization: consistent with _run_ss_tol_fb; G=0 fix in task.py makes this safe
+    for st in sorted_task_list:
+        dt, _ = task_map[str(st.id)]
+        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
+        result.stats.update(r)
+
     # Build UNI task list
     # We keep SS task list in parallel for TRT operations
     uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
@@ -1564,6 +1597,12 @@ def _run_uni_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations
     Follows SS-tol logic but using UNI RTA functions (get_UNI_R_and_K,
     get_UNI_tolerance, update_UNI_R_list_and_tolerance_list).
     """
+    # K=1 initialization: consistent with _run_ss_tol
+    for st in sorted_task_list:
+        dt, _ = task_map[str(st.id)]
+        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
+        result.stats.update(r)
+
     from copy import deepcopy
     uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
 

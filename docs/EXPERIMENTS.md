@@ -114,8 +114,32 @@ python scripts/40_run_fig5_design_time.py \
 | `--num-tasks` | 8 | Tasks per taskset |
 | `--num-tasksets` | 100 | Number of random tasksets |
 | `--utilization` | 0.8 | Total GPU utilization |
-| `--algorithms` | UNI-opt UNI-heu SS-tol-fb | Algorithms to compare |
+| `--algorithms` | uni:opt uni:heu ss:tol-fb | Algorithms (canonical or paper-label, e.g. `SS-tol-fb`) |
+| `--algorithm-set` | — | Predefined set: `main4`, `full8`, `ss_only`, `uni_only` |
 | `--live` | False | Enable live TRT profiling |
+
+### Algorithm sets
+
+| Set | Algorithms |
+|-----|-----------|
+| `main4` | SS-tol-fb, UNI-tol-fb, SS-opt, UNI-opt |
+| `full8` | All 8 SS+UNI variants |
+| `ss_only` | SS-opt, SS-heu, SS-tol, SS-tol-fb |
+| `uni_only` | UNI-opt, UNI-heu, UNI-tol, UNI-tol-fb |
+
+Both paper-style labels (`SS-tol-fb`) and canonical forms (`ss:tol-fb`) are accepted in
+`--algorithms`. `--algorithm-set` overrides `--algorithms`.
+
+### Progress output columns
+
+```
+SCHED wall=0.05s masks=8 real=0 cache=0 k1=8 skipped=0 split=False
+```
+- `masks`: total mask evaluations including K=1 baseline
+- `real`: selected-mask TRT profiles (should be 0 in dry-run)
+- `cache`: mask-level cache hits
+- `k1`: K=1 no-split baseline evaluations (never triggers TRT)
+- `skipped`: live evals suppressed by LiveProfileBudget
 
 ### Output
 
@@ -125,6 +149,9 @@ results/dnn_experiments/<run-name>/
   per_taskset_algorithm_results.csv
   summary.md
 ```
+
+New CSV columns vs. prior version: `baseline_k1_hits`, `interval_onnx_cache_hits/misses`,
+`interval_engine_cache_hits/misses`, `interval_engine_build_wall_s`.
 
 ### Plotting
 

@@ -95,10 +95,16 @@ In live mode, `evaluate_and_apply_mask` short-circuits any all-zero mask to this
 returning `cache_hit=True`. If `base_chunk_times_ms` are all zero in live mode, an error is
 returned directing the user to run `scripts/20_preflight_design.py`.
 
-**K=1 initialization**: All four algorithms start from the all-zero mask (no-split) state:
-- `ss:opt` and `uni:opt`: via `_paper_no_split_gate_ss/uni()`
-- `ss:tol-fb`: explicit `apply_no_split_mask()` at function entry
-- `uni:tol-fb`: implicit (no-split is the initial task state before the first tolerance check)
+**K=1 accounting (`is_k1_baseline`)**: Both K=1 return paths set
+`MaskApplicationResult.is_k1_baseline=True`. `ProfilingStats.update()` checks this flag first
+and routes to `baseline_k1_hits`, never to `real_profiles`, `cache_hits`, or
+`dry_run_evaluations`. This prevents K=1 live-mode errors from inflating `real_profiles`.
+
+**K=1 initialization**: All eight algorithms start from the all-zero mask (no-split) state:
+- `ss:opt` and `uni:opt`: via `_paper_no_split_gate_ss/uni()` → `_run_ss/uni_single`
+- `ss:tol-fb`, `ss:tol`: explicit `apply_no_split_mask()` loop at function entry
+- `uni:tol-fb`, `uni:tol`, `uni:single`: explicit `apply_no_split_mask()` loop at function entry
+  (added for SS/UNI accounting consistency; G=0 fix in `task.py` makes this safe)
 
 **Policy-limited feasibility probe**: `_run_ss_opt_paper()` and `_run_ss_heu_paper()` use
 `apply_policy_to_mask([1]*(N-1), enabled)` as the full-split probe — not the raw all-ones mask.
@@ -115,8 +121,9 @@ and TRT engine for each merged base-chunk interval independently of the mask var
 When two different masks share a chunk with the same `source_chunk_ids = [start..end]`, the
 second mask reuses the cached ONNX/engine rather than rebuilding it.
 - ONNX export is done per-chunk inline (calls `export_module()` directly, not subprocess).
-- Engine build falls back to whole-variant `build_engines()` if the all-or-nothing interval
-  cache check fails for any engine, then populates the interval cache afterwards.
+- Engine build is done **per-chunk** via `build_single_engine()` (trtexec). If an engine is
+  already in interval cache, it is copied directly; otherwise trtexec is invoked for that
+  chunk only, then the result is stored in interval cache.
 - `timing.json` inside each interval directory records `export_wall_s` and
   `build_{precision}_wall_s` for cold-cache design-time estimation.
 - Interval cache is additive: deleting `artifacts/chunk_cache/` does not break correctness.
