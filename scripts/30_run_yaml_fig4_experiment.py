@@ -45,12 +45,42 @@ from src.integration.live_budget import LiveProfileBudget
 AlgorithmSpec = Tuple[str, str, str]
 TasksetEntry = Tuple[float, Path]
 
-_DEFAULT_ALGORITHMS: List[AlgorithmSpec] = [
-    ("ss", "tol-fb", "SS_ours"),
-    ("uni", "tol-fb", "UNI_ours"),
-    ("ss", "opt", "SS_Buttazzo"),
-    ("uni", "opt", "UNI_Buttazzo"),
-]
+# Canonical algorithm sets.  Tuples are (rta_model, algorithm, display_label).
+_ALGORITHM_SETS: Dict[str, List[AlgorithmSpec]] = {
+    # Four main paper algorithms (default).
+    "main4": [
+        ("ss",  "tol-fb", "SS-tol-fb"),
+        ("uni", "tol-fb", "UNI-tol-fb"),
+        ("ss",  "opt",    "SS-opt"),
+        ("uni", "opt",    "UNI-opt"),
+    ],
+    # Full 2×4 matrix: all SS + UNI tolerance / heuristic / optimal variants.
+    "full8": [
+        ("ss",  "opt",    "SS-opt"),
+        ("ss",  "heu",    "SS-heu"),
+        ("ss",  "tol",    "SS-tol"),
+        ("ss",  "tol-fb", "SS-tol-fb"),
+        ("uni", "opt",    "UNI-opt"),
+        ("uni", "heu",    "UNI-heu"),
+        ("uni", "tol",    "UNI-tol"),
+        ("uni", "tol-fb", "UNI-tol-fb"),
+    ],
+    # SS-only or UNI-only slices.
+    "ss_only": [
+        ("ss", "opt",    "SS-opt"),
+        ("ss", "heu",    "SS-heu"),
+        ("ss", "tol",    "SS-tol"),
+        ("ss", "tol-fb", "SS-tol-fb"),
+    ],
+    "uni_only": [
+        ("uni", "opt",    "UNI-opt"),
+        ("uni", "heu",    "UNI-heu"),
+        ("uni", "tol",    "UNI-tol"),
+        ("uni", "tol-fb", "UNI-tol-fb"),
+    ],
+}
+# Backward-compatible alias kept for any external scripts that reference it.
+_DEFAULT_ALGORITHMS: List[AlgorithmSpec] = _ALGORITHM_SETS["main4"]
 
 
 def _load_fig4_helpers():
@@ -127,7 +157,42 @@ def parse_args() -> argparse.Namespace:
         default=str(REPO / "results" / "dnn_experiments"),
         help="Base output directory; run output goes under <output-dir>/<run-name>",
     )
+    ap.add_argument(
+        "--algorithm-set",
+        default="main4",
+        choices=list(_ALGORITHM_SETS.keys()),
+        dest="algorithm_set",
+        help="Predefined algorithm set (main4|full8|ss_only|uni_only). "
+             "Ignored when --algorithms is given.",
+    )
+    ap.add_argument(
+        "--algorithms",
+        nargs="+",
+        default=None,
+        metavar="MODEL:ALGO[:LABEL]",
+        help="Explicit algorithm list, overrides --algorithm-set. "
+             "Each item: 'ss:tol-fb', 'uni:opt', 'ss:heu:My-Label', ...",
+    )
     return ap.parse_args()
+
+
+def _build_algorithm_list(args: argparse.Namespace) -> List[AlgorithmSpec]:
+    """Resolve the final (model, algorithm, label) list from CLI args."""
+    if args.algorithms:
+        result: List[AlgorithmSpec] = []
+        for spec in args.algorithms:
+            parts = spec.split(":")
+            if len(parts) < 2:
+                raise ValueError(
+                    f"Invalid --algorithms item {spec!r}. "
+                    "Format: model:algorithm or model:algorithm:label"
+                )
+            model = parts[0].strip().lower()
+            algo  = parts[1].strip().lower()
+            label = parts[2].strip() if len(parts) > 2 else f"{model.upper()}-{algo}"
+            result.append((model, algo, label))
+        return result
+    return list(_ALGORITHM_SETS[args.algorithm_set])
 
 
 def strip_comment(line: str) -> str:
@@ -592,9 +657,13 @@ def write_summary(
     split_rows: List[Dict[str, Any]],
     per_rows: List[Dict[str, Any]],
     live_budget: Optional[LiveProfileBudget],
+    algorithm_list: Optional[List[AlgorithmSpec]] = None,
 ) -> None:
     errors = [r for r in per_rows if r.get("error")]
     any_split = any(r.get("any_split_triggered") for r in per_rows)
+    algo_labels = ", ".join(
+        label for _, _, label in (algorithm_list or _DEFAULT_ALGORITHMS)
+    )
     lines = [
         "# YAML Fig.4 Experiment Summary",
         "",
@@ -604,7 +673,8 @@ def write_summary(
         f"- Mode: {'live/cache-first' if args.live else 'dry-run'}",
         f"- Models: {', '.join(args.models)}",
         f"- Split policy: {args.split_policy}",
-        f"- Algorithms: SS_ours, UNI_ours, SS_Buttazzo, UNI_Buttazzo",
+        f"- Algorithm set: {getattr(args, 'algorithm_set', 'main4')}",
+        f"- Algorithms: {algo_labels}",
         f"- Tasksets generated: {len(tasksets)}",
         f"- Utilizations: {', '.join(str(u) for u in mapping['utilizations'])}",
         f"- Tasksets per utilization: {mapping['num_tasksets_per_utilization']}",
@@ -692,13 +762,16 @@ def write_run_config(
     yaml_data: Dict[str, Any],
     mapping: Dict[str, Any],
     tasksets: List[TasksetEntry],
+    algorithm_list: Optional[List[AlgorithmSpec]] = None,
 ) -> None:
     data = vars(args).copy()
     data["config"] = str(config_path)
     data["dry_run_effective"] = not args.live
     data["yaml_values"] = yaml_data
     data["mapped_values"] = mapping
-    data["algorithms"] = [f"{m}:{a}:{label}" for m, a, label in _DEFAULT_ALGORITHMS]
+    data["algorithms"] = [
+        f"{m}:{a}:{label}" for m, a, label in (algorithm_list or _DEFAULT_ALGORITHMS)
+    ]
     data["tasksets"] = [
         {"utilization": util, "path": str(path.relative_to(REPO))}
         for util, path in tasksets
@@ -715,6 +788,8 @@ def main() -> int:
     run_name = make_run_name(args, config_path)
     out_dir = Path(args.output_dir) / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    algorithm_list = _build_algorithm_list(args)
 
     live_budget: Optional[LiveProfileBudget] = None
     if args.live:
@@ -733,6 +808,8 @@ def main() -> int:
     print(f"Mode: {'live/cache-first' if args.live else 'dry-run'}", flush=True)
     print(f"Models: {args.models}", flush=True)
     print(f"Split policy: {args.split_policy}", flush=True)
+    print(f"Algorithm set: {args.algorithm_set}", flush=True)
+    print(f"Algorithms: {[label for _, _, label in algorithm_list]}", flush=True)
     print(f"Utilizations: {mapping['utilizations']}", flush=True)
     print(f"Tasksets per U: {mapping['num_tasksets_per_utilization']}", flush=True)
     print(f"Output: {out_dir.relative_to(REPO)}", flush=True)
@@ -742,7 +819,7 @@ def main() -> int:
         print("[error] no tasksets generated", file=sys.stderr)
         return 1
 
-    write_run_config(out_dir, args, config_path, yaml_data, mapping, tasksets)
+    write_run_config(out_dir, args, config_path, yaml_data, mapping, tasksets, algorithm_list)
     write_yaml_mapping_report(out_dir, config_path, yaml_data, mapping, mapping_notes, tasksets)
 
     per_rows: List[Dict[str, Any]] = []
@@ -755,7 +832,7 @@ def main() -> int:
             f"\n[{taskset_idx}/{len(tasksets)}] {taskset_path.relative_to(REPO)}",
             flush=True,
         )
-        for rta_model, algorithm, label in _DEFAULT_ALGORITHMS:
+        for rta_model, algorithm, label in algorithm_list:
             result = run_dnn_rta_algorithm(
                 dnn_taskset_path=taskset_path,
                 model=rta_model,
@@ -843,7 +920,7 @@ def main() -> int:
     (out_dir / "all_results.json").write_text(json.dumps(all_results, indent=2))
     write_summary(
         out_dir, args, config_path, mapping, tasksets, ratio_rows, split_rows,
-        per_rows, live_budget,
+        per_rows, live_budget, algorithm_list,
     )
 
     elapsed = time.time() - start

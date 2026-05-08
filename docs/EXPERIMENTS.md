@@ -172,6 +172,87 @@ python scripts/30_run_yaml_fig4_experiment.py \
 
 ---
 
+---
+
+## Full 2×4 Algorithm Matrix (full8)
+
+The complete comparison uses all eight SS + UNI algorithm variants.
+
+### Available Algorithm Sets
+
+| Set | Algorithms |
+|-----|-----------|
+| `main4` (default) | SS-tol-fb, UNI-tol-fb, SS-opt, UNI-opt |
+| `full8` | All 8: SS-opt, SS-heu, SS-tol, SS-tol-fb, UNI-opt, UNI-heu, UNI-tol, UNI-tol-fb |
+| `ss_only` | SS-opt, SS-heu, SS-tol, SS-tol-fb |
+| `uni_only` | UNI-opt, UNI-heu, UNI-tol, UNI-tol-fb |
+
+### Dry-run full8 sweep (recommended starting point)
+
+```bash
+python scripts/30_run_yaml_fig4_experiment.py \
+    --config configs/yaml/1_GPU0.6-1.0_task8_ov5.yaml \
+    --models alexnet resnet18 vgg19 \
+    --split-policy major_blocks \
+    --algorithm-set full8 \
+    --num-tasksets-override 50 \
+    --dry-run \
+    --run-name fig4_full8_dry
+```
+
+### Plotting full8 results
+
+```bash
+# All 8 algorithms in one plot
+python scripts/31_plot_fig4.py \
+    --run-dir results/dnn_experiments/fig4_full8_dry \
+    --plot-mode all \
+    --output fig4_full8 \
+    --output-dir results/plots
+
+# SS-only and UNI-only sub-plots
+python scripts/31_plot_fig4.py \
+    --run-dir results/dnn_experiments/fig4_full8_dry \
+    --plot-mode ss_only \
+    --output fig4_full8 \
+    --output-dir results/plots
+
+python scripts/31_plot_fig4.py \
+    --run-dir results/dnn_experiments/fig4_full8_dry \
+    --plot-mode uni_only \
+    --output fig4_full8 \
+    --output-dir results/plots
+```
+
+### Explicit algorithm override
+
+```bash
+# Run only SS-tol-fb and SS-opt
+python scripts/30_run_yaml_fig4_experiment.py \
+    --config configs/yaml/1_GPU0.6-1.0_task8_ov5.yaml \
+    --models alexnet resnet18 vgg19 \
+    --algorithms ss:tol-fb ss:opt \
+    --dry-run \
+    --run-name fig4_ss_subset
+```
+
+### Live full8 with profile cap (Jetson)
+
+After running preflight (`scripts/20_preflight_design.py`):
+
+```bash
+python scripts/30_run_yaml_fig4_experiment.py \
+    --config configs/yaml/1_GPU0.6-1.0_task8_ov5.yaml \
+    --models alexnet resnet18 vgg19 \
+    --split-policy major_blocks \
+    --algorithm-set full8 \
+    --num-tasksets-override 100 \
+    --global-max-real-profiles 200 \
+    --run-name fig4_full8_live
+```
+
+---
+
 ## Reproducing Paper Results
 
 For paper-faithful results, use `configs/yaml/1_GPU0.6-1.0_task8_ov5.yaml` with:

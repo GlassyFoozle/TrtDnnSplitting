@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-66_plot_yaml_fig4.py — Plot YAML-driven Fig.4 schedulability curves.
+31_plot_fig4.py — Plot YAML-driven Fig.4 schedulability curves.
 
-Reads schedulability_ratio.csv from a script-65 run and writes PNG/PDF under
-results/dnn_experiments/plots/.
+Reads schedulability_ratio.csv from a script-30 run and writes PNG/PDF.
+Supports all eight algorithms from the full2×4 experiment matrix.
 """
 
 from __future__ import annotations
@@ -13,17 +13,51 @@ import csv
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 REPO = Path(__file__).resolve().parent.parent
-_PLOTS_DIR = REPO / "results" / "dnn_experiments" / "plots"
+_PLOTS_DIR = REPO / "results" / "plots"
 
-_ORDER = ["SS_ours", "UNI_ours", "UNI_Buttazzo", "SS_Buttazzo"]
-_STYLE = {
-    "SS_ours": {"color": "#1f77b4", "marker": "o", "linestyle": "-"},
-    "UNI_ours": {"color": "#2ca02c", "marker": "s", "linestyle": "-"},
-    "UNI_Buttazzo": {"color": "#d62728", "marker": "^", "linestyle": "--"},
-    "SS_Buttazzo": {"color": "#ff7f0e", "marker": "D", "linestyle": "--"},
+# ── Render order (lower index = front of legend) ─────────────────────────────
+_ORDER_FULL8 = [
+    "SS-tol-fb", "SS-heu", "SS-tol", "SS-opt",
+    "UNI-tol-fb", "UNI-heu", "UNI-tol", "UNI-opt",
+]
+
+# Backward-compatible aliases from the old main4 label scheme.
+_LEGACY_ALIASES = {
+    "SS_ours":      "SS-tol-fb",
+    "UNI_ours":     "UNI-tol-fb",
+    "SS_Buttazzo":  "SS-opt",
+    "UNI_Buttazzo": "UNI-opt",
+}
+
+_STYLE: Dict[str, dict] = {
+    # SS algorithms — blue family, solid lines
+    "SS-tol-fb": {"color": "#1f77b4", "marker": "o",  "linestyle": "-"},
+    "SS-heu":    {"color": "#17becf", "marker": "v",  "linestyle": "-"},
+    "SS-tol":    {"color": "#aec7e8", "marker": "^",  "linestyle": "-."},
+    "SS-opt":    {"color": "#ff7f0e", "marker": "D",  "linestyle": "--"},
+    # UNI algorithms — green/warm family, solid lines
+    "UNI-tol-fb": {"color": "#2ca02c", "marker": "s",  "linestyle": "-"},
+    "UNI-heu":    {"color": "#9467bd", "marker": "P",  "linestyle": "-"},
+    "UNI-tol":    {"color": "#98df8a", "marker": "X",  "linestyle": "-."},
+    "UNI-opt":    {"color": "#d62728", "marker": "^",  "linestyle": "--"},
+}
+
+_PLOT_MODE_FILTERS: Dict[str, Optional[Set[str]]] = {
+    "all":      None,
+    "main4":    {"SS-tol-fb", "UNI-tol-fb", "SS-opt", "UNI-opt",
+                 "SS_ours", "UNI_ours", "SS_Buttazzo", "UNI_Buttazzo"},
+    "ss_only":  {"SS-tol-fb", "SS-heu", "SS-tol", "SS-opt"},
+    "uni_only": {"UNI-tol-fb", "UNI-heu", "UNI-tol", "UNI-opt"},
+}
+
+_PLOT_MODE_ORDER: Dict[str, List[str]] = {
+    "all":      _ORDER_FULL8,
+    "main4":    ["SS-tol-fb", "UNI-tol-fb", "SS-opt", "UNI-opt"],
+    "ss_only":  ["SS-tol-fb", "SS-heu", "SS-tol", "SS-opt"],
+    "uni_only": ["UNI-tol-fb", "UNI-heu", "UNI-tol", "UNI-opt"],
 }
 
 
@@ -54,6 +88,13 @@ def parse_args() -> argparse.Namespace:
         help="Plot title",
     )
     ap.add_argument("--dpi", type=int, default=150)
+    ap.add_argument(
+        "--plot-mode",
+        default="all",
+        choices=list(_PLOT_MODE_FILTERS.keys()),
+        dest="plot_mode",
+        help="Which algorithms to include: all|main4|ss_only|uni_only",
+    )
     return ap.parse_args()
 
 
@@ -79,8 +120,26 @@ def load_series(csv_path: Path) -> Dict[str, List[Tuple[float, float]]]:
             except (KeyError, TypeError, ValueError):
                 continue
             algorithm = row.get("algorithm", "unknown")
+            # Normalize legacy labels to canonical names.
+            algorithm = _LEGACY_ALIASES.get(algorithm, algorithm)
             series[algorithm].append((util, ratio))
     return {k: sorted(v) for k, v in series.items()}
+
+
+def filter_series(
+    series: Dict[str, List[Tuple[float, float]]],
+    plot_mode: str,
+) -> Dict[str, List[Tuple[float, float]]]:
+    allowed = _PLOT_MODE_FILTERS.get(plot_mode)
+    if allowed is None:
+        return series
+    return {k: v for k, v in series.items() if k in allowed}
+
+
+def render_order(series: Dict[str, List[Tuple[float, float]]], plot_mode: str) -> List[str]:
+    primary = _PLOT_MODE_ORDER.get(plot_mode, _ORDER_FULL8)
+    extras = sorted(k for k in series if k not in primary)
+    return primary + extras
 
 
 def plot_with_matplotlib(
@@ -88,13 +147,16 @@ def plot_with_matplotlib(
     title: str,
     output_base: Path,
     dpi: int,
+    plot_mode: str,
 ) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(7, 4.8))
-    for label in _ORDER + sorted(k for k in series if k not in _ORDER):
+    figsize = (8.5, 5.0) if len(series) > 4 else (7, 4.8)
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for label in render_order(series, plot_mode):
         points = series.get(label, [])
         if not points:
             continue
@@ -115,7 +177,8 @@ def plot_with_matplotlib(
     ax.set_title(title)
     ax.set_ylim(-0.05, 1.05)
     ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize=9)
+    ncols = 2 if len(series) > 4 else 1
+    ax.legend(loc="best", fontsize=8, ncol=ncols)
     fig.tight_layout()
 
     output_base.parent.mkdir(parents=True, exist_ok=True)
@@ -132,12 +195,13 @@ def plot_with_pillow(
     series: Dict[str, List[Tuple[float, float]]],
     title: str,
     output_base: Path,
+    plot_mode: str,
 ) -> None:
     """Minimal fallback used only if matplotlib is unavailable."""
     from PIL import Image, ImageDraw
 
-    width, height = 1000, 680
-    margin_l, margin_r, margin_t, margin_b = 90, 40, 70, 90
+    width, height = 1100, 720
+    margin_l, margin_r, margin_t, margin_b = 90, 260, 70, 90
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
 
@@ -153,32 +217,36 @@ def plot_with_pillow(
     def yp(y: float) -> int:
         return int(height - margin_b - y * (height - margin_t - margin_b))
 
-    # axes
     draw.line([(margin_l, margin_t), (margin_l, height - margin_b)], fill="black", width=2)
     draw.line([(margin_l, height - margin_b), (width - margin_r, height - margin_b)], fill="black", width=2)
     draw.text((margin_l, 25), title, fill="black")
-    draw.text((width // 2 - 80, height - 35), "Total U across CPUs", fill="black")
+    draw.text((width // 2 - 200, height - 35), "Total U across CPUs", fill="black")
     draw.text((10, height // 2), "Schedulability Ratio", fill="black")
 
-    colors = {
-        "SS_ours": (31, 119, 180),
-        "UNI_ours": (44, 160, 44),
-        "UNI_Buttazzo": (214, 39, 40),
-        "SS_Buttazzo": (255, 127, 14),
+    _pil_colors = {
+        "SS-tol-fb":  (31, 119, 180),
+        "SS-heu":     (23, 190, 207),
+        "SS-tol":     (174, 199, 232),
+        "SS-opt":     (255, 127, 14),
+        "UNI-tol-fb": (44, 160, 44),
+        "UNI-heu":    (148, 103, 189),
+        "UNI-tol":    (152, 223, 138),
+        "UNI-opt":    (214, 39, 40),
     }
+
     legend_y = margin_t
-    for label in _ORDER + sorted(k for k in series if k not in _ORDER):
+    for label in render_order(series, plot_mode):
         points = series.get(label, [])
         if not points:
             continue
-        color = colors.get(label, (80, 80, 80))
+        color = _pil_colors.get(label, (80, 80, 80))
         coords = [(xp(x), yp(y)) for x, y in points]
         if len(coords) >= 2:
             draw.line(coords, fill=color, width=3)
         for x, y in coords:
             draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=color)
-        draw.rectangle((width - 230, legend_y + 4, width - 210, legend_y + 14), fill=color)
-        draw.text((width - 200, legend_y), label, fill="black")
+        draw.rectangle((width - 250, legend_y + 4, width - 230, legend_y + 14), fill=color)
+        draw.text((width - 220, legend_y), label, fill="black")
         legend_y += 24
 
     output_base.parent.mkdir(parents=True, exist_ok=True)
@@ -197,23 +265,34 @@ def main() -> int:
     if not series:
         print(f"[error] no series found in {csv_path}", file=sys.stderr)
         return 1
+
+    series = filter_series(series, args.plot_mode)
+    if not series:
+        print(
+            f"[error] no series left after applying --plot-mode={args.plot_mode}",
+            file=sys.stderr,
+        )
+        return 1
+
     output_name = args.output
     if not output_name:
         if args.run_dir:
             output_name = Path(args.run_dir).name
         else:
             output_name = csv_path.parent.name
+    if args.plot_mode != "all":
+        output_name = f"{output_name}_{args.plot_mode}"
     output_base = Path(args.output_dir) / output_name
 
     try:
-        plot_with_matplotlib(series, args.title, output_base, args.dpi)
+        plot_with_matplotlib(series, args.title, output_base, args.dpi, args.plot_mode)
     except ModuleNotFoundError:
         try:
-            plot_with_pillow(series, args.title, output_base)
+            plot_with_pillow(series, args.title, output_base, args.plot_mode)
         except ModuleNotFoundError as exc:
             print(
                 "[error] plotting requires matplotlib or Pillow. "
-                "Try: conda run -n trt python scripts/66_plot_yaml_fig4.py ...",
+                "Try: conda run -n trt python scripts/31_plot_fig4.py ...",
                 file=sys.stderr,
             )
             print(str(exc), file=sys.stderr)
