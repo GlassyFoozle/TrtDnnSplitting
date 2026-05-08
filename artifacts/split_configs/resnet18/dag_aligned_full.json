@@ -1,0 +1,856 @@
+{
+  "model": "resnet18",
+  "variant": "dag_aligned_full",
+  "n_chunks": 14,
+  "input_shape": [
+    1,
+    3,
+    224,
+    224
+  ],
+  "dag_summary": {
+    "full_fx": {
+      "n_nodes": 71,
+      "n_edges": 78,
+      "n_skip_edges": 5,
+      "sync_counts": {
+        "e2e": 1,
+        "critical": 24,
+        "wo_skip": 49,
+        "max": 71
+      },
+      "critical_indices": [
+        1,
+        2,
+        3,
+        4,
+        10,
+        11,
+        17,
+        18,
+        26,
+        27,
+        33,
+        34,
+        42,
+        43,
+        49,
+        50,
+        58,
+        59,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70
+      ],
+      "critical_nodes": [
+        {
+          "index": 1,
+          "name": "conv1",
+          "op": "call_module",
+          "target": "conv1"
+        },
+        {
+          "index": 2,
+          "name": "bn1",
+          "op": "call_module",
+          "target": "bn1"
+        },
+        {
+          "index": 3,
+          "name": "relu",
+          "op": "call_module",
+          "target": "relu"
+        },
+        {
+          "index": 4,
+          "name": "maxpool",
+          "op": "call_module",
+          "target": "maxpool"
+        },
+        {
+          "index": 10,
+          "name": "add",
+          "op": "call_function",
+          "target": "<built-in function add>"
+        },
+        {
+          "index": 11,
+          "name": "layer1_0_relu_1",
+          "op": "call_module",
+          "target": "layer1.0.relu"
+        },
+        {
+          "index": 17,
+          "name": "add_1",
+          "op": "call_function",
+          "target": "<built-in function add>"
+        },
+        {
+          "index": 18,
+          "name": "layer1_1_relu_1",
+          "op": "call_module",
+          "target": "layer1.1.relu"
+        },
+        {
+          "index": 26,
+          "name": "add_2",
+          "op": "call_function",
+          "target": "<built-in function add>"
+        },
+        {
+          "index": 27,
+          "name": "layer2_0_relu_1",
+          "op": "call_module",
+          "target": "layer2.0.relu"
+        },
+        {
+          "index": 33,
+          "name": "add_3",
+          "op": "call_function",
+          "target": "<built-in function add>"
+        },
+        {
+          "index": 34,
+          "name": "layer2_1_relu_1",
+          "op": "call_module",
+          "target": "layer2.1.relu"
+        },
+        {
+          "index": 42,
+          "name": "add_4",
+          "op": "call_function",
+          "target": "<built-in function add>"
+        },
+        {
+          "index": 43,
+          "name": "layer3_0_relu_1",
+          "op": "call_module",
+          "target": "layer3.0.relu"
+        },
+        {
+          "index": 49,
+          "name": "add_5",
+          "op": "call_function",
+          "target": "<built-in function add>"
+        },
+        {
+          "index": 50,
+          "name": "layer3_1_relu_1",
+          "op": "call_module",
+          "target": "layer3.1.relu"
+        },
+        {
+          "index": 58,
+          "name": "add_6",
+          "op": "call_function",
+          "target": "<built-in function add>"
+        },
+        {
+          "index": 59,
+          "name": "layer4_0_relu_1",
+          "op": "call_module",
+          "target": "layer4.0.relu"
+        },
+        {
+          "index": 65,
+          "name": "add_7",
+          "op": "call_function",
+          "target": "<built-in function add>"
+        },
+        {
+          "index": 66,
+          "name": "layer4_1_relu_1",
+          "op": "call_module",
+          "target": "layer4.1.relu"
+        },
+        {
+          "index": 67,
+          "name": "avgpool",
+          "op": "call_module",
+          "target": "avgpool"
+        },
+        {
+          "index": 68,
+          "name": "flatten",
+          "op": "call_function",
+          "target": "<built-in method flatten of type object at 0xffff846e0098>"
+        },
+        {
+          "index": 69,
+          "name": "fc",
+          "op": "call_module",
+          "target": "fc"
+        }
+      ]
+    },
+    "module_only": {
+      "n_nodes": 62,
+      "n_edges": 69,
+      "n_skip_edges": 5,
+      "sync_counts": {
+        "e2e": 1,
+        "critical": 15,
+        "wo_skip": 40,
+        "max": 62
+      },
+      "critical_indices": [
+        1,
+        2,
+        3,
+        4,
+        10,
+        16,
+        24,
+        30,
+        38,
+        44,
+        52,
+        58,
+        59,
+        60,
+        61
+      ],
+      "critical_nodes": [
+        {
+          "index": 1,
+          "name": "conv1",
+          "op": "call_module",
+          "target": "conv1"
+        },
+        {
+          "index": 2,
+          "name": "bn1",
+          "op": "call_module",
+          "target": "bn1"
+        },
+        {
+          "index": 3,
+          "name": "relu",
+          "op": "call_module",
+          "target": "relu"
+        },
+        {
+          "index": 4,
+          "name": "maxpool",
+          "op": "call_module",
+          "target": "maxpool"
+        },
+        {
+          "index": 10,
+          "name": "layer1_0_relu_1",
+          "op": "call_module",
+          "target": "layer1.0.relu"
+        },
+        {
+          "index": 16,
+          "name": "layer1_1_relu_1",
+          "op": "call_module",
+          "target": "layer1.1.relu"
+        },
+        {
+          "index": 24,
+          "name": "layer2_0_relu_1",
+          "op": "call_module",
+          "target": "layer2.0.relu"
+        },
+        {
+          "index": 30,
+          "name": "layer2_1_relu_1",
+          "op": "call_module",
+          "target": "layer2.1.relu"
+        },
+        {
+          "index": 38,
+          "name": "layer3_0_relu_1",
+          "op": "call_module",
+          "target": "layer3.0.relu"
+        },
+        {
+          "index": 44,
+          "name": "layer3_1_relu_1",
+          "op": "call_module",
+          "target": "layer3.1.relu"
+        },
+        {
+          "index": 52,
+          "name": "layer4_0_relu_1",
+          "op": "call_module",
+          "target": "layer4.0.relu"
+        },
+        {
+          "index": 58,
+          "name": "layer4_1_relu_1",
+          "op": "call_module",
+          "target": "layer4.1.relu"
+        },
+        {
+          "index": 59,
+          "name": "avgpool",
+          "op": "call_module",
+          "target": "avgpool"
+        },
+        {
+          "index": 60,
+          "name": "fc",
+          "op": "call_module",
+          "target": "fc"
+        }
+      ]
+    }
+  },
+  "dag_aligned_summary": {
+    "full_critical_total": 24,
+    "full_critical_compute": 23,
+    "full_critical_excluded": [
+      {
+        "idx": 70,
+        "name": "output",
+        "op": "output",
+        "target": "output",
+        "reason": "non_compute_terminal"
+      }
+    ],
+    "materialized_chunks": 14,
+    "matches_full_critical_compute": false
+  },
+  "chunks": [
+    {
+      "id": 0,
+      "name": "chunk0",
+      "chunk_name": "conv1",
+      "description": "conv1",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "conv1",
+      "source_module_target": "conv1",
+      "op_type": "_ResNet18CF_Stem",
+      "covered_fx_nodes": [
+        "conv1"
+      ],
+      "covered_module_targets": [
+        "conv1"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "1",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        3,
+        224,
+        224
+      ],
+      "output_shape": [
+        1,
+        64,
+        112,
+        112
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk0.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk0_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk0_fp16.engine"
+    },
+    {
+      "id": 1,
+      "name": "chunk1",
+      "chunk_name": "bn1",
+      "description": "bn1",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "bn1",
+      "source_module_target": "bn1",
+      "op_type": "_ResNet18CF_Stem",
+      "covered_fx_nodes": [
+        "bn1"
+      ],
+      "covered_module_targets": [
+        "bn1"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "2",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        64,
+        112,
+        112
+      ],
+      "output_shape": [
+        1,
+        64,
+        112,
+        112
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk1.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk1_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk1_fp16.engine"
+    },
+    {
+      "id": 2,
+      "name": "chunk2",
+      "chunk_name": "relu",
+      "description": "relu",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "relu",
+      "source_module_target": "relu",
+      "op_type": "_ResNet18CF_Stem",
+      "covered_fx_nodes": [
+        "relu"
+      ],
+      "covered_module_targets": [
+        "relu"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "3",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        64,
+        112,
+        112
+      ],
+      "output_shape": [
+        1,
+        64,
+        112,
+        112
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk2.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk2_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk2_fp16.engine"
+    },
+    {
+      "id": 3,
+      "name": "chunk3",
+      "chunk_name": "maxpool",
+      "description": "maxpool",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "maxpool",
+      "source_module_target": "maxpool",
+      "op_type": "_ResNet18CF_Stem",
+      "covered_fx_nodes": [
+        "maxpool"
+      ],
+      "covered_module_targets": [
+        "maxpool"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "4",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        64,
+        112,
+        112
+      ],
+      "output_shape": [
+        1,
+        64,
+        56,
+        56
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk3.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk3_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk3_fp16.engine"
+    },
+    {
+      "id": 4,
+      "name": "chunk4",
+      "chunk_name": "layer1_0",
+      "description": "layer1[0]",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "layer1_0_relu",
+      "source_module_target": "layer1.0.relu",
+      "op_type": "BasicBlock",
+      "covered_fx_nodes": [
+        "layer1_0_relu"
+      ],
+      "covered_module_targets": [
+        "layer1.0.relu"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": false,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "7;11",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        64,
+        56,
+        56
+      ],
+      "output_shape": [
+        1,
+        64,
+        56,
+        56
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk4.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk4_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk4_fp16.engine"
+    },
+    {
+      "id": 5,
+      "name": "chunk5",
+      "chunk_name": "layer1_1",
+      "description": "layer1[1]",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "layer1_1_relu",
+      "source_module_target": "layer1.1.relu",
+      "op_type": "BasicBlock",
+      "covered_fx_nodes": [
+        "layer1_1_relu"
+      ],
+      "covered_module_targets": [
+        "layer1.1.relu"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": false,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "14;18",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        64,
+        56,
+        56
+      ],
+      "output_shape": [
+        1,
+        64,
+        56,
+        56
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk5.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk5_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk5_fp16.engine"
+    },
+    {
+      "id": 6,
+      "name": "chunk6",
+      "chunk_name": "layer2_0",
+      "description": "layer2[0]",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "layer2_0_relu",
+      "source_module_target": "layer2.0.relu",
+      "op_type": "BasicBlock",
+      "covered_fx_nodes": [
+        "layer2_0_relu"
+      ],
+      "covered_module_targets": [
+        "layer2.0.relu"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": false,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "21;27",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        64,
+        56,
+        56
+      ],
+      "output_shape": [
+        1,
+        128,
+        28,
+        28
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk6.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk6_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk6_fp16.engine"
+    },
+    {
+      "id": 7,
+      "name": "chunk7",
+      "chunk_name": "layer2_1",
+      "description": "layer2[1]",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "layer2_1_relu",
+      "source_module_target": "layer2.1.relu",
+      "op_type": "BasicBlock",
+      "covered_fx_nodes": [
+        "layer2_1_relu"
+      ],
+      "covered_module_targets": [
+        "layer2.1.relu"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": false,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "30;34",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        128,
+        28,
+        28
+      ],
+      "output_shape": [
+        1,
+        128,
+        28,
+        28
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk7.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk7_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk7_fp16.engine"
+    },
+    {
+      "id": 8,
+      "name": "chunk8",
+      "chunk_name": "layer3_0",
+      "description": "layer3[0]",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "layer3_0_relu",
+      "source_module_target": "layer3.0.relu",
+      "op_type": "BasicBlock",
+      "covered_fx_nodes": [
+        "layer3_0_relu"
+      ],
+      "covered_module_targets": [
+        "layer3.0.relu"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": false,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "37;43",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        128,
+        28,
+        28
+      ],
+      "output_shape": [
+        1,
+        256,
+        14,
+        14
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk8.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk8_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk8_fp16.engine"
+    },
+    {
+      "id": 9,
+      "name": "chunk9",
+      "chunk_name": "layer3_1",
+      "description": "layer3[1]",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "layer3_1_relu",
+      "source_module_target": "layer3.1.relu",
+      "op_type": "BasicBlock",
+      "covered_fx_nodes": [
+        "layer3_1_relu"
+      ],
+      "covered_module_targets": [
+        "layer3.1.relu"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": false,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "46;50",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        256,
+        14,
+        14
+      ],
+      "output_shape": [
+        1,
+        256,
+        14,
+        14
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk9.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk9_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk9_fp16.engine"
+    },
+    {
+      "id": 10,
+      "name": "chunk10",
+      "chunk_name": "layer4_0",
+      "description": "layer4[0]",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "layer4_0_relu",
+      "source_module_target": "layer4.0.relu",
+      "op_type": "BasicBlock",
+      "covered_fx_nodes": [
+        "layer4_0_relu"
+      ],
+      "covered_module_targets": [
+        "layer4.0.relu"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": false,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "53;59",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        256,
+        14,
+        14
+      ],
+      "output_shape": [
+        1,
+        512,
+        7,
+        7
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk10.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk10_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk10_fp16.engine"
+    },
+    {
+      "id": 11,
+      "name": "chunk11",
+      "chunk_name": "layer4_1",
+      "description": "layer4[1]",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "layer4_1_relu",
+      "source_module_target": "layer4.1.relu",
+      "op_type": "BasicBlock",
+      "covered_fx_nodes": [
+        "layer4_1_relu"
+      ],
+      "covered_module_targets": [
+        "layer4.1.relu"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": false,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "62;66",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        512,
+        7,
+        7
+      ],
+      "output_shape": [
+        1,
+        512,
+        7,
+        7
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk11.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk11_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk11_fp16.engine"
+    },
+    {
+      "id": 12,
+      "name": "chunk12",
+      "chunk_name": "avgpool",
+      "description": "avgpool",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "avgpool",
+      "source_module_target": "avgpool",
+      "op_type": "_ResNet18CF_Stem",
+      "covered_fx_nodes": [
+        "avgpool"
+      ],
+      "covered_module_targets": [
+        "avgpool"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "67",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        512,
+        7,
+        7
+      ],
+      "output_shape": [
+        1,
+        512,
+        1,
+        1
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk12.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk12_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk12_fp16.engine"
+    },
+    {
+      "id": 13,
+      "name": "chunk13",
+      "chunk_name": "flatten_fc",
+      "description": "flatten+fc",
+      "source_graph": "module_only_dag",
+      "source_fx_node_name": "fc",
+      "source_module_target": "fc",
+      "op_type": "_ResNet18CF_FlattenFC",
+      "covered_fx_nodes": [
+        "fc"
+      ],
+      "covered_module_targets": [
+        "fc"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "module-DAG critical node; BasicBlock internals remain grouped because residual add requires multi-value liveness",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "69",
+      "notes": "Equal to critical_full for safety. Finer BasicBlock splitting is deferred until multi-input/multi-output FX subgraph extraction exists.",
+      "input_shape": [
+        1,
+        512,
+        1,
+        1
+      ],
+      "output_shape": [
+        1,
+        1000
+      ],
+      "onnx": "artifacts/onnx/resnet18/dag_aligned_full/chunk13.onnx",
+      "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/chunk13_fp32.engine",
+      "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/chunk13_fp16.engine"
+    }
+  ],
+  "full_model": {
+    "onnx": "artifacts/onnx/resnet18/dag_aligned_full/full.onnx",
+    "engine_fp32": "artifacts/engines/resnet18/dag_aligned_full/full_fp32.engine",
+    "engine_fp16": "artifacts/engines/resnet18/dag_aligned_full/full_fp16.engine"
+  }
+}

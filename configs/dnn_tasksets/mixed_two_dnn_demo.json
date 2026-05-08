@@ -1,0 +1,32 @@
+{
+  "name": "mixed_two_dnn_demo",
+  "description": "Two DNN tasks on the same CPU: AlexNet (high priority, short period) and ResNet18 (lower priority, longer period). Designed to exercise interference terms in RTA. Both tasks share cpu_id=0.",
+  "precision": "fp32",
+  "wcet_metric": "p99",
+  "tasks": [
+    {
+      "task_name": "tau1_alexnet_hi",
+      "model_name": "alexnet",
+      "period_ms": 50.0,
+      "deadline_ms": 50.0,
+      "priority": 1,
+      "cpu_id": 0,
+      "cpu_pre_ms": 0.8,
+      "cpu_post_ms": 0.4,
+      "target_chunks": 4,
+      "notes": "High-priority AlexNet K=4; T=50ms; gpu_p99 ~1.75ms"
+    },
+    {
+      "task_name": "tau2_resnet18_lo",
+      "model_name": "resnet18",
+      "period_ms": 100.0,
+      "deadline_ms": 100.0,
+      "priority": 2,
+      "cpu_id": 0,
+      "cpu_pre_ms": 0.5,
+      "cpu_post_ms": 0.3,
+      "target_chunks": 3,
+      "notes": "Lower-priority ResNet18 K=3; T=100ms; gpu_p99 ~1.04ms"
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "_comment": "Per-model split-point policies. Each policy lists which boundary indices (0-indexed, length N-1) may be active. Disabled boundaries are always 0.",
+  "_boundary_semantics": "Boundary k = split between chunk k and chunk k+1 in dag_aligned_full order.",
+
+  "alexnet": {
+    "_N": 22,
+    "_boundaries": 21,
+    "all":        [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],
+    "paper_like": [1,2,4,5,7,9,11,12,13,14,15,17,18,20],
+    "stage":      [2,5,12,14],
+    "five_points": [2,5,12,14,17],
+    "ten_points":  [1,2,4,5,7,9,11,12,14,17],
+    "major_blocks": [2,5,7,9,12,14,17,20],
+    "_notes": {
+      "all": "All 21 boundaries enabled.",
+      "paper_like": "Skip within-pair boundaries (between Conv and its ReLU). Keep after-relu, after-maxpool, after-avgpool, after-flatten, after-dropout.",
+      "stage": "Only after each major pooling group (MaxPool 2,5,12) and after flatten (14).",
+      "five_points": "Five major design-phase boundaries: after each MaxPool (2,5,12), after flatten (14), after first FC/ReLU group (17).",
+      "ten_points": "Ten materializable design-phase boundaries selected from paper_like, covering feature groups and classifier transitions.",
+      "major_blocks": "Major architectural exits: conv1+pool, conv2+pool, conv3, conv4, conv5+pool, flatten, fc1+relu, fc2+relu."
+    }
+  },
+
+  "resnet18": {
+    "_N": 14,
+    "_boundaries": 13,
+    "all":        [0,1,2,3,4,5,6,7,8,9,10,11,12],
+    "paper_like": [3,4,5,6,7,8,9,10,11,12],
+    "stage":      [3,5,7,9,11,12],
+    "five_points": [3,5,7,9,11],
+    "ten_points":  [3,4,5,6,7,8,9,10,11,12],
+    "major_blocks": [3,5,7,9,11,12],
+    "_notes": {
+      "all": "All 13 boundaries enabled.",
+      "paper_like": "Skip within-stem splits (conv1/bn1/relu/maxpool fused into stem). Split between BasicBlocks and after avgpool.",
+      "stage": "After stem (3), after each layer pair: layer1(5), layer2(7), layer3(9), layer4(11), after avgpool(12).",
+      "five_points": "Five major design-phase boundaries: after stem (3) and after each residual layer pair (5,7,9,11).",
+      "ten_points": "All ten policy-safe paper_like boundaries; still does not split inside BasicBlock residual internals.",
+      "major_blocks": "Major materializable exits: stem, residual layer1, layer2, layer3, layer4, avgpool. BasicBlock internals remain disabled."
+    }
+  },
+
+  "vgg19": {
+    "_N": 46,
+    "_boundaries": 45,
+    "all":        [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44],
+    "paper_like": [1,3,4,6,8,9,11,13,15,17,18,20,22,24,26,27,29,31,33,35,36,37,38,40,41,43,44],
+    "stage":      [4,9,18,27,36,38],
+    "five_points": [4,9,18,27,36],
+    "ten_points":  [4,9,18,27,36,37,38,40,41,43],
+    "major_blocks": [4,9,18,27,36,37,38,41,44],
+    "_notes": {
+      "all": "All 45 boundaries enabled.",
+      "paper_like": "Skip within-pair boundaries (Conv -> ReLU within same conv-relu pair). Keep after-relu, after-maxpool, after-avgpool, after-flatten, after-dropout in classifier.",
+      "stage": "Only after each conv group MaxPool (4,9,18,27,36) and after flatten (38). 6 major architectural split points.",
+      "five_points": "Five major design-phase boundaries: after each VGG convolutional group MaxPool (4,9,18,27,36).",
+      "ten_points": "Ten materializable design-phase boundaries: five feature group exits plus avgpool/flatten/classifier transitions.",
+      "major_blocks": "Major architectural exits: five conv-group maxpools, avgpool, flatten, fc1+relu+dropout, fc2+relu+dropout."
+    }
+  },
+
+  "vit": {
+    "_N": 0,
+    "_boundaries": 0,
+    "all": [],
+    "paper_like": [],
+    "stage": [],
+    "five_points": [],
+    "ten_points": [],
+    "major_blocks": [],
+    "_notes": {
+      "major_blocks": "Placeholder. ViT registry support exists, but dag_aligned_full chunk materialization is pending transformer-specific wrappers."
+    }
+  },
+
+  "vit_b_16": {
+    "_N": 0,
+    "_boundaries": 0,
+    "all": [],
+    "paper_like": [],
+    "stage": [],
+    "five_points": [],
+    "ten_points": [],
+    "major_blocks": [],
+    "_notes": {
+      "major_blocks": "Placeholder. ViT registry support exists, but dag_aligned_full chunk materialization is pending transformer-specific wrappers."
+    }
+  }
+}

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+*.pyc
+
+# Generated artifacts (keep .gitkeep)
+# Split configs are generated — except dag_aligned_full which ships for dry-run
+artifacts/split_configs/
+!artifacts/split_configs/
+!artifacts/split_configs/*/
+!artifacts/split_configs/*/dag_aligned_full.json
+artifacts/onnx/
+artifacts/engines/
+
+# Generated results (keep .gitkeep)
+results/evaluations/
+results/table4/
+results/optimization/
+results/yaml_fig4/
+results/fig5/
+results/plots/
+results/dnn_experiments/
+
+# C++ build
+cpp_runtime/build/
+
+# Profiling cache
+*.profiling_cache.json
+.profiling_cache.json
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/

@@ -1,0 +1,24 @@
+output_dir: task_set_list/utilization
+n_task_sets: 500
+
+number_of_cpu_range: [8, 8]
+# Total task-set utilization range. The generator divides each selected value
+# evenly across the selected number of CPUs.
+utilization_range: [0.7, 0.9]
+utilization_step: 0.05
+number_of_tasks_per_cpu_range: [1, 1]
+period_range: [1000, 10000]
+G_ratio_range: [1.0, 1.0]
+number_of_inference_segments_range: [1, 1]
+max_block_count_range: [20, 20]
+G_utilization_threshold_range: [1.0, 1.0]
+
+per_splitting_overhead: 5
+
+# If true (default), total utilization is divided evenly across CPUs (U_total / n_cpus each).
+# If false, UUniFast distributes U_total randomly across CPUs (sum preserved, each CPU varies).
+uniform_cpu_utilization: false
+
+# If true, each task on a CPU gets exactly U_cpu / n_tasks utilization (uniform).
+# If false (default), UUniFast is used to generate randomly distributed utilizations per task.
+uniform_task_utilization: false

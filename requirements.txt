@@ -1,0 +1,6 @@
+numpy>=1.21
+matplotlib>=3.5
+onnx>=1.14
+# torch and torchvision: install from JetPack wheel on Jetson,
+# or via pip for x86 development/testing.
+# PyYAML is NOT required — YAML parsing is built-in.
