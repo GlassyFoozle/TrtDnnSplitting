@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-15_compare_k1_timing_semantics.py — Diagnose K=1 timing consistency between
-task generation and RTA analysis in dry-run mode.
+15_compare_k1_timing_semantics.py — Verify K=1 timing consistency between
+task generation and RTA analysis.
 
 Prints, for each model:
   - Whether profiling data is available (results/table4/)
-  - The G value used by task generation (_DRY_RUN_BASE_WCET_MS fallback or cache)
-  - The G value seen by RTA analysis after K=1 patching (sum of base_chunk_times_ms)
-  - Whether generation G == analysis G (consistent) or not (inconsistent)
+  - The G value used by task generation (from profiling cache, or fallback)
+  - The G value seen by RTA analysis (sum of per-chunk p99 from candidate_space)
+  - Source of each G value
+  - Whether generation G == analysis G (consistent) or not
 
-An inconsistency (analysis G=0 while generation G>0) causes all tasksets to
-appear trivially schedulable with K=1 in dry-run mode, so no splitting is
-ever triggered. This script is for diagnosis without running TensorRT.
+Consistent means both sources use the same profiled data. After running
+scripts/21_profile_base_chunks.py, both should reflect real Jetson measurements.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -25,16 +26,49 @@ sys.path.insert(0, str(REPO))
 MODELS = ["alexnet", "resnet18", "vgg19"]
 PRECISION = "fp32"
 
-_DRY_RUN_BASE_WCET_MS = {"alexnet": 1.754, "resnet18": 1.037, "vgg19": 7.562}
+_FALLBACK_WCET_MS = {"alexnet": 1.754, "resnet18": 1.037, "vgg19": 7.562}
+
+
+def _gen_g_source(model: str, precision: str) -> str:
+    """Return a human-readable string describing where _get_base_gpu_wcet_ms got its value."""
+    from src.optimization.profiling_db import ProfilingDB
+
+    cache_path = REPO / "results" / "optimization" / ".profiling_cache.json"
+    if cache_path.exists():
+        try:
+            data = json.loads(cache_path.read_text())
+            key = f"{model.lower()}|dag_aligned_full|{precision}"
+            entry = data.get("entries", {}).get(key)
+            if entry:
+                p99 = entry.get("per_chunk_gpu_p99_ms")
+                if p99:
+                    return "profiling cache (p99)"
+                mean = entry.get("per_chunk_gpu_mean_ms")
+                if mean:
+                    return "profiling cache (mean)"
+        except Exception:
+            pass
+
+    eval_dir = REPO / "results" / "evaluations" / model.lower()
+    if eval_dir.exists():
+        for f in sorted(eval_dir.glob("*.json")):
+            try:
+                d = json.loads(f.read_text())
+                if d.get("mask") and sum(d["mask"]) == 0:
+                    return f"evaluation JSON ({f.name})"
+            except Exception:
+                continue
+
+    return "hardcoded fallback (_DRY_RUN_BASE_WCET_MS)"
 
 
 def main() -> int:
     from src.optimization.candidate_space import load_candidate_space
     from src.integration.dnn_workload_generator import _get_base_gpu_wcet_ms
 
-    print("=" * 72)
+    print("=" * 76)
     print("K=1 timing semantics: task generation vs. RTA analysis")
-    print("=" * 72)
+    print("=" * 76)
     print()
     print(f"Repo: {REPO}")
     print()
@@ -44,47 +78,69 @@ def main() -> int:
         p = REPO / "results" / "table4" / f"{model}_cpp_dag_aligned_full_{PRECISION}.json"
         has_table4[model] = p.exists()
 
-    header = f"{'Model':<12}  {'Table4':6}  {'Gen G (ms)':>12}  {'RTA G (ms)':>12}  "
-    header += f"{'N':>4}  {'G/N (ms)':>10}  {'Consistent':>10}"
+    header = (f"{'Model':<12}  {'Table4':6}  {'Gen G (ms)':>12}  "
+              f"{'RTA G (ms)':>12}  {'N':>4}  {'Consistent':>10}")
     print(header)
-    print("-" * 80)
+    print("-" * 64)
 
     all_consistent = True
+    rows = []
     for model in MODELS:
         cs = load_candidate_space(model, PRECISION)
         gen_g = _get_base_gpu_wcet_ms(model, PRECISION, "p99")
         rta_g = sum(cs.chunk_gpu_p99_ms)
         n = cs.candidate_count
-        g_per_chunk = rta_g / n if n > 0 else 0.0
-        consistent = abs(gen_g - rta_g) < 0.001 if gen_g is not None else False
+        consistent = gen_g is not None and abs(gen_g - rta_g) < 0.001
         if not consistent:
             all_consistent = False
         table4 = "YES" if has_table4[model] else "no"
         status = "OK" if consistent else "MISMATCH"
+        gen_source = _gen_g_source(model, PRECISION)
         print(
             f"{model:<12}  {table4:<6}  {gen_g or 0.0:>12.4f}  {rta_g:>12.4f}  "
-            f"{n:>4}  {g_per_chunk:>10.6f}  {status:>10}"
+            f"{n:>4}  {status:>10}"
         )
+        rows.append((model, gen_g, rta_g, gen_source, consistent))
 
     print()
+
+    # Per-model source detail
+    for model, gen_g, rta_g, gen_source, consistent in rows:
+        print(f"  {model}:  Gen G source = {gen_source}")
+        if not consistent:
+            print(f"    WARNING: Gen G={gen_g:.4f}ms  RTA G={rta_g:.4f}ms  diff={abs((gen_g or 0)-rta_g):.4f}ms")
+
+    print()
+
     if all_consistent:
         print("RESULT: Generation and analysis G are consistent.")
-        print("        Dry-run schedulability experiment will be meaningful.")
+        print("        Schedulability experiments will use real profiled WCET values.")
     else:
         print("RESULT: INCONSISTENCY DETECTED.")
-        print("        Generation uses non-zero G for periods, but analysis sees G=0.")
-        print("        This causes all tasksets to appear trivially schedulable at K=1.")
         print()
-        print("CAUSE:  results/table4/<model>_cpp_dag_aligned_full_fp32.json is missing.")
-        print("        candidate_space.py fell back to all-zero chunk times before")
-        print("        the fix added in PR 'Diagnose Fig4 K1 timing semantics'.")
-        print()
-        print("FIX:    The fix in candidate_space.py adds Priority 3: when timing is")
-        print("        all-zero, distribute _DRY_RUN_BASE_WCET_MS equally across N chunks.")
-        print("        After the fix, Gen G == RTA G and experiments are meaningful.")
+        # Diagnose the specific failure mode
+        cache_path = REPO / "results" / "optimization" / ".profiling_cache.json"
+        table4_missing = [m for m in MODELS if not has_table4[m]]
+        cache_missing = not cache_path.exists()
+
+        if table4_missing:
+            print(f"CAUSE:  results/table4/ JSON missing for: {table4_missing}")
+            print(f"FIX:    Run: conda run -n trt python scripts/21_profile_base_chunks.py")
+            print(f"              --models {' '.join(table4_missing)} --precision {PRECISION}")
+        elif cache_missing:
+            print("CAUSE:  Profiling cache (.profiling_cache.json) does not exist.")
+            print("        Task generator is using hardcoded fallback WCET values.")
+            print("FIX:    Re-run scripts/21_profile_base_chunks.py to rebuild the cache.")
+        else:
+            print("CAUSE:  Profiling cache exists but task generator is not reading real values.")
+            print("        Check that results/optimization/.profiling_cache.json is non-empty")
+            print("        and has entries for the affected models.")
+            print()
+            print("FIX:    Re-run scripts/21_profile_base_chunks.py (or manually re-import")
+            print("        results/table4/ JSONs into the profiling cache).")
 
     print()
-    print("Per-model chunk timing detail (RTA analysis view after candidate_space load):")
+    print("Per-model chunk timing detail (RTA analysis view):")
     print()
     for model in MODELS:
         cs = load_candidate_space(model, PRECISION)
@@ -92,7 +148,8 @@ def main() -> int:
         total_p99 = sum(cs.chunk_gpu_p99_ms)
         print(f"  {model}  N={cs.candidate_count}  has_timing={cs.has_timing}")
         print(f"    sum_mean={total_mean:.4f}ms  sum_p99={total_p99:.4f}ms")
-        print(f"    per-chunk mean: [{', '.join(f'{t:.4f}' for t in cs.chunk_gpu_mean_ms[:5])}{'...' if cs.candidate_count > 5 else ''}]")
+        print(f"    per-chunk p99: [{', '.join(f'{t:.4f}' for t in cs.chunk_gpu_p99_ms[:5])}"
+              f"{'...' if cs.candidate_count > 5 else ''}]")
         print()
 
     return 0 if all_consistent else 1

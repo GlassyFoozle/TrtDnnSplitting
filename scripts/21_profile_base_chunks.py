@@ -251,22 +251,8 @@ def _import_to_cache(table4_paths: List[Path], precision: str) -> None:
         db = ProfilingDB(cache_path)
         imported = 0
         for p in table4_paths:
-            if not p.exists():
-                continue
-            data = json.loads(p.read_text())
-            model = data.get("model", "")
-            variant = data.get("variant", "dag_aligned_full")
-            chunks = data.get("chunks", [])
-            if not chunks or not model:
-                continue
-            means = [c["gpu_mean_ms"] for c in chunks]
-            p99s  = [c["gpu_p99_ms"]  for c in chunks]
-            db.upsert(model, variant, precision, {
-                "per_chunk_gpu_mean_ms": means,
-                "per_chunk_gpu_p99_ms":  p99s,
-            })
-            imported += 1
-        db.save()
+            if db.import_from_cpp_result(p):
+                imported += 1
         print(f"\n[cache] Imported {imported} model(s) into {cache_path.relative_to(REPO)}")
     except Exception as exc:
         print(f"[warn] Cache import failed (non-fatal): {exc}")
