@@ -363,6 +363,7 @@ def run_dnn_rta_algorithm(
     max_candidates: int = 10000,        # max BFS candidates for paper-style OPT
     live_budget=None,                   # Optional[LiveProfileBudget] — shared global budget
     allow_proactive_splitting: bool = False,
+    allow_equal_wcet_fallback: bool = False,
 ) -> DNNAlgorithmResult:
     """
     Run a DNN-aware splitting algorithm on a taskset JSON.
@@ -397,7 +398,8 @@ def run_dnn_rta_algorithm(
     )
 
     # Load DNN tasks + build initial SegInfTask task_set
-    dnn_tasks = generate_dnn_taskset(dnn_taskset_path, overlay_evaluations=True)
+    dnn_tasks = generate_dnn_taskset(dnn_taskset_path, overlay_evaluations=True,
+                                     allow_equal_wcet_fallback=allow_equal_wcet_fallback)
     task_set = build_task_set_dict(dnn_tasks)
 
     # Build task map: task.id (str) → (DNNBackedTask, SegInfTask)

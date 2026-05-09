@@ -12,6 +12,55 @@ conda run -n trt python scripts/30_run_yaml_fig4_experiment.py ...
 
 ---
 
+## ModuleNotFoundError: No module named 'src.splitting.critical_split'
+
+**Symptom:** Every split attempt (K>1) fails with this error; only K=1 no-split tasksets are
+reported schedulable; `analysis_error_count` equals the total number of taskset×algorithm pairs
+where splitting was attempted.
+
+**Cause:** `src/splitting/critical_split.py` was missing. Present in repo as of the fix commit.
+
+**Fix:** Pull the latest changes. The file is present; no user action required.
+
+---
+
+## RuntimeError: Missing dag_aligned_full profiling data
+
+**Symptom:**
+```
+RuntimeError: Missing dag_aligned_full profiling data for 'alexnet' (fp32).
+Expected: results/table4/alexnet_cpp_dag_aligned_full_fp32.json
+
+Run base chunk profiling first:
+  conda run -n trt python scripts/21_profile_base_chunks.py --models alexnet --precision fp32
+```
+
+**Cause:** Script 21 (`21_profile_base_chunks.py`) has not been run, so no per-chunk GPU timing
+data exists. Without real profiling data, schedulability analysis uses incorrect (zero) chunk times.
+
+**Fix (Jetson — accurate results):**
+```bash
+# 1. Build the C++ profiler (one-time)
+cd cpp_runtime && mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+cd ../../..
+
+# 2. Profile base chunks
+conda run -n trt python scripts/21_profile_base_chunks.py \
+    --models alexnet resnet18 vgg19 --precision fp32
+```
+
+**Fix (development/CI without Jetson — approximate results):**
+```bash
+# Add --allow-equal-wcet-fallback to scripts 30 or 40
+conda run -n trt python scripts/30_run_yaml_fig4_experiment.py \
+    ... --dry-run --allow-equal-wcet-fallback ...
+```
+This uses equal-weight WCET/N per chunk (approximate). Results differ from the paper.
+
+---
+
 ## FileNotFoundError: dag_aligned_full config not found
 
 **Symptom:**

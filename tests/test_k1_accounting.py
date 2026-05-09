@@ -53,8 +53,8 @@ def _load_first_task(tmp_path: Path):
     from src.integration.dnn_taskset_loader import load_dnn_taskset
     from src.integration.dnnsplitting_adapter import dnn_task_to_seginftask
 
-    p = _make_taskset_json([])  # base times loaded from dag_aligned_full (dry-run zeros OK)
-    tasks = load_dnn_taskset(p)
+    p = _make_taskset_json([])
+    tasks = load_dnn_taskset(p, allow_equal_wcet_fallback=True)
     dt = tasks[0]
     seg_task = dnn_task_to_seginftask(dt)
     return dt, seg_task
@@ -91,7 +91,8 @@ def _load_full_taskset(n_tasks: int = 4):
     fd = tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False)
     json.dump(spec, fd)
     fd.close()
-    dnn_tasks = generate_dnn_taskset(Path(fd.name), overlay_evaluations=False)
+    dnn_tasks = generate_dnn_taskset(Path(fd.name), overlay_evaluations=False,
+                                     allow_equal_wcet_fallback=True)
 
     task_set = build_task_set_dict(dnn_tasks)
     sorted_list = sort_task_set(task_set)

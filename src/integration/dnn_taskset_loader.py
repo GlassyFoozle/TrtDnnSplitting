@@ -99,13 +99,12 @@ def _build_initial_mask_for_k(boundary_count: int, k: int) -> List[int]:
 def load_dnn_taskset(
     path: str | Path,
     profiling_db=None,
+    allow_equal_wcet_fallback: bool = False,
 ) -> List[DNNBackedTask]:
     """
     Load a DNN taskset JSON and return a list of DNNBackedTask objects.
 
     Timing data is resolved from dag_aligned_full C++ profiling results.
-    Falls back to zeros if no profiling data is available (suitable for
-    structure-only tests).
 
     Parameters
     ----------
@@ -113,6 +112,9 @@ def load_dnn_taskset(
         Path to the taskset JSON file. If relative, resolved from configs/dnn_tasksets/.
     profiling_db : ProfilingDB, optional
         Used to load per-chunk timing. If None, loads directly from result JSONs.
+    allow_equal_wcet_fallback : bool
+        If True, fall back to equal-weight WCET/N when profiling data is missing
+        (development/CI use only). Default False raises RuntimeError.
 
     Returns
     -------
@@ -141,7 +143,8 @@ def load_dnn_taskset(
 
         # Load candidate space for timing data
         try:
-            cs = load_candidate_space(model_name, precision, profiling_db)
+            cs = load_candidate_space(model_name, precision, profiling_db,
+                                      allow_equal_wcet_fallback=allow_equal_wcet_fallback)
         except FileNotFoundError as exc:
             raise FileNotFoundError(
                 f"[{task_name}] {exc}\n"

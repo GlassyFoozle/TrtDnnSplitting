@@ -26,13 +26,14 @@ Five pre-defined YAML configs in `configs/yaml/`:
 ### Running
 
 ```bash
-# Dry-run (no TRT engines required)
+# Dry-run (no TRT engines required; needs base chunk profiling OR --allow-equal-wcet-fallback)
 python scripts/30_run_yaml_fig4_experiment.py \
     --config configs/yaml/1_GPU0.6-1.0_task8_ov5.yaml \
     --models alexnet resnet18 vgg19 \
     --split-policy major_blocks \
     --num-tasksets-override 50 \
     --dry-run \
+    --allow-equal-wcet-fallback \
     --run-name fig4_dry_run
 
 # Live (requires TRT engines from 20_preflight_design.py)
@@ -181,15 +182,49 @@ Runs one taskset through one algorithm and prints per-task split decisions.
 
 ## Live Preflight (Jetson Only)
 
-Before any live experiment, build and profile the base TRT engines:
+**Two scripts are required** before running any live experiment.
+
+### Step 1 — Base chunk profiling (mandatory, run once)
+
+Script 21 exports ONNX, builds TRT engines for each base chunk, runs
+`cpp_runtime/build/table4_runner` to measure per-chunk GPU timing, and writes
+`results/table4/<model>_cpp_dag_aligned_full_<precision>.json`.
 
 ```bash
-# Build engines for all three models
+# Prerequisites: build the C++ profiler first (one-time)
+cd cpp_runtime && mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+
+# Then profile all three models
+conda run -n trt python scripts/21_profile_base_chunks.py \
+    --models alexnet resnet18 vgg19 \
+    --precision fp32 \
+    --warmup 20 \
+    --iters 200
+```
+
+> **Without this step**, scripts 30/40 will fail with:
+> ```
+> RuntimeError: Missing dag_aligned_full profiling data for 'alexnet' (fp32).
+> ```
+> Pass `--allow-equal-wcet-fallback` for development/CI use without Jetson hardware
+> (uses approximate equal-weight WCET/N; results differ from the paper).
+
+### Step 2 — Design preflight (optional, validates split-point engine builds)
+
+Script 20 checks ONNX export and engine builds for split-point candidates.
+It does **not** measure per-chunk GPU timing (that is script 21's job).
+
+```bash
 python scripts/20_preflight_design.py \
     --models alexnet resnet18 vgg19 \
     --precision fp32
+```
 
-# Then run live Fig.4
+### Step 3 — Live Fig. 4
+
+```bash
 python scripts/30_run_yaml_fig4_experiment.py \
     --config configs/yaml/1_GPU0.6-1.0_task8_ov5.yaml \
     --models alexnet resnet18 vgg19 \
@@ -224,6 +259,7 @@ python scripts/30_run_yaml_fig4_experiment.py \
     --algorithm-set full8 \
     --num-tasksets-override 50 \
     --dry-run \
+    --allow-equal-wcet-fallback \
     --run-name fig4_full8_dry
 ```
 

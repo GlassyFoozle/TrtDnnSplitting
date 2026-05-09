@@ -31,6 +31,7 @@ def generate_dnn_taskset(
     taskset_path: str | Path,
     profiling_db=None,
     overlay_evaluations: bool = True,
+    allow_equal_wcet_fallback: bool = False,
 ) -> List[DNNBackedTask]:
     """
     Generate a list of DNNBackedTask from a taskset JSON spec.
@@ -43,12 +44,16 @@ def generate_dnn_taskset(
         Passed to load_candidate_space for timing data resolution.
     overlay_evaluations : bool
         If True, overlay per-chunk timing from EvaluationResult JSONs when available.
+    allow_equal_wcet_fallback : bool
+        Passed to load_candidate_space; enables equal-weight WCET/N fallback for
+        development/CI use when profiling data is missing.
 
     Returns
     -------
     list of DNNBackedTask
     """
-    tasks = load_dnn_taskset(taskset_path, profiling_db=profiling_db)
+    tasks = load_dnn_taskset(taskset_path, profiling_db=profiling_db,
+                             allow_equal_wcet_fallback=allow_equal_wcet_fallback)
 
     if overlay_evaluations:
         for task in tasks:

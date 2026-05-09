@@ -8,9 +8,15 @@ This module provides:
   - CandidateSpace: wrapper around a dag_aligned_full config with timing data
   - load_candidate_space(model_name, precision): build a CandidateSpace
 
-Timing data is loaded from the profiling DB (C++ results preferred).
-If not available, base chunk times default to 0.0 (balanced splitter will
-fall back to equal-time assumption).
+Timing data priority:
+  1. ProfilingDB object (if provided)
+  2. results/table4/<model>_cpp_dag_aligned_full_<precision>.json
+  3. [opt-in only] equal-weight fallback via allow_equal_wcet_fallback=True
+
+By default, if no profiling data exists the function raises RuntimeError
+directing the user to run scripts/21_profile_base_chunks.py. Using
+allow_equal_wcet_fallback=True restores the equal-distribution approximation
+(WCET/N per chunk) for development or CI environments without hardware.
 """
 
 from __future__ import annotations
@@ -67,14 +73,19 @@ def load_candidate_space(
     model_name: str,
     precision: str = "fp32",
     profiling_db: Optional[object] = None,  # ProfilingDB or None
+    allow_equal_wcet_fallback: bool = False,
 ) -> CandidateSpace:
     """
     Load the CandidateSpace for model_name from its dag_aligned_full config.
 
     Timing data priority:
       1. profiling_db (if provided and has entry for this model/variant/precision)
-      2. Existing C++ result JSON at results/table4/<model>_cpp_dag_aligned_full_<precision>.json
-      3. All zeros (no timing available)
+      2. results/table4/<model>_cpp_dag_aligned_full_<precision>.json
+      3. [opt-in] equal-weight fallback if allow_equal_wcet_fallback=True
+
+    Raises RuntimeError if no timing data is found and
+    allow_equal_wcet_fallback is False. Run scripts/21_profile_base_chunks.py
+    to create the required profiling data.
     """
     cfg_path = REPO / "artifacts" / "split_configs" / model_name / f"{_BASE_VARIANT}.json"
     if not cfg_path.exists():
@@ -120,17 +131,31 @@ def load_candidate_space(
             except Exception:
                 pass
 
-    # Priority 3: dry-run fallback — equal per-chunk allocation from known Jetson reference
-    # values. These match the p99 totals from dag_aligned_full profiling on Jetson AGX Orin
-    # (FP32). Without this, fresh-clone dry-run analysis sees G=0 while task generation
-    # used _DRY_RUN_BASE_WCET_MS for periods — an inconsistency that makes every taskset
-    # trivially schedulable at K=1 with no splitting triggered.
+    # Priority 3: opt-in equal-weight fallback for development/CI without hardware.
+    # These reference values match measured p99 totals on Jetson AGX Orin (FP32).
+    # They must be kept in sync with _DRY_RUN_BASE_WCET_MS in dnn_workload_generator.py.
     if all(t == 0.0 for t in per_chunk_means):
-        _DRY_RUN_WCET_MS = {"alexnet": 1.754, "resnet18": 1.037, "vgg19": 7.562}
-        wcet = _DRY_RUN_WCET_MS.get(model_name.lower())
-        if wcet is not None:
-            per_chunk_means = [wcet / n] * n
-            per_chunk_p99 = [wcet / n] * n
+        if allow_equal_wcet_fallback:
+            _DRY_RUN_WCET_MS = {"alexnet": 1.754, "resnet18": 1.037, "vgg19": 7.562}
+            wcet = _DRY_RUN_WCET_MS.get(model_name.lower())
+            if wcet is not None:
+                per_chunk_means = [wcet / n] * n
+                per_chunk_p99 = [wcet / n] * n
+        else:
+            table4_path = (
+                REPO / "results" / "table4"
+                / f"{model_name}_cpp_{_BASE_VARIANT}_{precision}.json"
+            )
+            raise RuntimeError(
+                f"Missing dag_aligned_full profiling data for {model_name!r} "
+                f"({precision}).\n"
+                f"Expected: {table4_path}\n\n"
+                f"Run base chunk profiling first:\n"
+                f"  conda run -n trt python scripts/21_profile_base_chunks.py "
+                f"--models {model_name} --precision {precision}\n\n"
+                f"Or pass --allow-equal-wcet-fallback to scripts 30/40 for "
+                f"development use (produces approximate results)."
+            )
 
     return CandidateSpace(
         model_name=model_name,

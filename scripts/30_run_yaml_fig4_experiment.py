@@ -173,6 +173,15 @@ def parse_args() -> argparse.Namespace:
         help="Explicit algorithm list, overrides --algorithm-set. "
              "Each item: 'ss:tol-fb', 'uni:opt', 'ss:heu:My-Label', ...",
     )
+    ap.add_argument(
+        "--allow-equal-wcet-fallback",
+        action="store_true",
+        default=False,
+        dest="allow_equal_wcet_fallback",
+        help="Development/CI only: fall back to equal-weight WCET/N when "
+             "base chunk profiling data is missing (produces approximate results). "
+             "Requires running scripts/21_profile_base_chunks.py for accurate results.",
+    )
     return ap.parse_args()
 
 
@@ -848,6 +857,7 @@ def main() -> int:
                 iters=args.iters,
                 live_budget=live_budget,
                 allow_proactive_splitting=args.allow_proactive_splitting,
+                allow_equal_wcet_fallback=args.allow_equal_wcet_fallback,
             )
             row = summarize_result(
                 util, taskset_path, rta_model, algorithm, label, result, initial_masks

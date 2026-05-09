@@ -148,6 +148,15 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--run-name", default=None)
     ap.add_argument("--output-dir", default=str(REPO / "results" / "dnn_experiments"))
+    ap.add_argument(
+        "--allow-equal-wcet-fallback",
+        action="store_true",
+        default=False,
+        dest="allow_equal_wcet_fallback",
+        help="Development/CI only: fall back to equal-weight WCET/N when "
+             "base chunk profiling data is missing (produces approximate results). "
+             "Requires running scripts/21_profile_base_chunks.py for accurate results.",
+    )
     return ap.parse_args()
 
 
@@ -698,6 +707,7 @@ def main() -> int:
                 iters=args.iters,
                 live_budget=live_budget,
                 allow_proactive_splitting=args.allow_proactive_splitting,
+                allow_equal_wcet_fallback=args.allow_equal_wcet_fallback,
             )
             wall = time.time() - t0
             row = summarize_result(taskset_path, model, algorithm, result, wall)
