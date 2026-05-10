@@ -454,6 +454,10 @@ def summarize_result(
         "cache_hits": int(result.stats.cache_hits),
         "real_profiles": int(result.stats.real_profiles),
         "skipped_cache_misses": int(getattr(result.stats, "skipped_cache_misses", 0)),
+        "unique_masks_evaluated": int(getattr(result.stats, "unique_masks_evaluated", 0)),
+        "unique_mask_cache_hits": int(getattr(result.stats, "unique_mask_cache_hits", 0)),
+        "unique_skipped_masks": int(getattr(result.stats, "unique_skipped_masks", 0)),
+        "interval_timing_cache_hits": int(getattr(result.stats, "interval_timing_cache_hits", 0)),
         "dry_run_evaluations": int(result.stats.dry_run_evaluations),
         "builds_triggered": int(result.stats.builds_triggered),
         "exports_triggered": int(result.stats.exports_triggered),
@@ -565,6 +569,10 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_real_profiles": avg(items, "real_profiles"),
             "avg_cache_hits": avg(items, "cache_hits"),
             "avg_skipped_cache_misses": avg(items, "skipped_cache_misses"),
+            "avg_unique_masks_evaluated": avg(items, "unique_masks_evaluated"),
+            "avg_unique_mask_cache_hits": avg(items, "unique_mask_cache_hits"),
+            "avg_unique_skipped_masks": avg(items, "unique_skipped_masks"),
+            "avg_interval_timing_cache_hits": avg(items, "interval_timing_cache_hits"),
             "avg_dry_run_evaluations": avg(items, "dry_run_evaluations"),
             "avg_final_active_boundaries": avg(items, "average_final_active_boundaries"),
             "disabled_active_boundaries": sum(
@@ -696,8 +704,7 @@ def write_summary(
             f"- global_max_real_profiles: {live_budget.global_max_real_profiles}",
             f"- stop_on_first_build: {live_budget.stop_on_first_build}",
             f"- global_profile_budget_used: {live_budget.used_real_profiles}",
-            f"- skipped_cache_misses: {live_budget.skipped_cache_misses}",
-            f"- live_build_attempted: {live_budget.stopped}",
+            f"- skipped_cache_misses_attempts: {live_budget.skipped_cache_misses}",
         ]
     lines += [
         "",

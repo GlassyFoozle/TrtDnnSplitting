@@ -531,6 +531,10 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_cache_hits": avg(items, "cache_hits"),
             "avg_real_profiles": avg(items, "real_profiles"),
             "avg_skipped_cache_misses": avg(items, "skipped_cache_misses"),
+            "avg_unique_masks_evaluated": avg(items, "unique_masks_evaluated"),
+            "avg_unique_mask_cache_hits": avg(items, "unique_mask_cache_hits"),
+            "avg_unique_skipped_masks": avg(items, "unique_skipped_masks"),
+            "avg_interval_timing_cache_hits": avg(items, "interval_timing_cache_hits"),
             "avg_optimization_runtime_s": avg(items, "optimization_runtime_s"),
             "split_triggered_tasksets": split_sets,
             "split_triggered_pct": split_sets / n if n else 0.0,
@@ -719,11 +723,23 @@ def write_summary(
         f"- Max profiles: {args.max_profiles}",
     ]
     if live_budget is not None:
+        # Aggregate unique-mask stats across all per-row records (from stats.to_dict())
+        _all_stats = [r.get("stats", {}) for r in per_rows if "stats" not in r]
+        # per_rows doesn't carry stats; read from all_results if available
+        _unique_eval   = sum(int(r.get("unique_masks_evaluated", 0)) for r in per_rows)
+        _unique_hits   = sum(int(r.get("unique_mask_cache_hits", 0)) for r in per_rows)
+        _unique_skip   = sum(int(r.get("unique_skipped_masks", 0)) for r in per_rows)
+        _intv_hits     = sum(int(r.get("interval_timing_cache_hits", 0)) for r in per_rows)
         lines += [
             f"- cache_only_live: {live_budget.cache_only}",
             f"- global_max_real_profiles: {live_budget.global_max_real_profiles}",
             f"- global_profile_budget_used: {live_budget.used_real_profiles}",
-            f"- skipped_cache_misses: {live_budget.skipped_cache_misses}",
+            f"- skipped_cache_misses_attempts: {live_budget.skipped_cache_misses}"
+            f"  (attempt-count; same mask counted each time it is evaluated)",
+            f"- unique_masks_evaluated: {_unique_eval}",
+            f"- unique_mask_cache_hits: {_unique_hits}",
+            f"- unique_skipped_masks: {_unique_skip}",
+            f"- interval_timing_cache_hits: {_intv_hits}",
         ]
     lines += [
         "",
@@ -923,7 +939,9 @@ def main() -> int:
         "algorithm_impl", "rta_model", "schedulable", "analysis_error", "error_type",
         "error_message", "overload_reason", "duration_s", "optimization_runtime_s",
         "masks_evaluated", "dry_run_evaluations", "real_profiles", "cache_hits",
-        "skipped_cache_misses", "gpu_util", "cpu_util", "total_util",
+        "skipped_cache_misses", "unique_masks_evaluated", "unique_mask_cache_hits",
+        "unique_skipped_masks", "interval_timing_cache_hits",
+        "gpu_util", "cpu_util", "total_util",
         "max_cpu_partition_util", "actual_g_ratio_min", "actual_g_ratio_max",
         "actual_g_ratio_avg", "actual_period_min_ms", "actual_period_max_ms",
         "model_distribution", "split_triggered", "split_task_count",
@@ -939,7 +957,9 @@ def main() -> int:
         "avg_gpu_util", "avg_cpu_util", "avg_total_util", "avg_actual_g_ratio",
         "min_actual_g_ratio", "max_actual_g_ratio", "avg_masks_evaluated",
         "avg_dry_run_evaluations", "avg_cache_hits", "avg_real_profiles",
-        "avg_skipped_cache_misses", "avg_optimization_runtime_s",
+        "avg_skipped_cache_misses", "avg_unique_masks_evaluated",
+        "avg_unique_mask_cache_hits", "avg_unique_skipped_masks",
+        "avg_interval_timing_cache_hits", "avg_optimization_runtime_s",
         "split_triggered_tasksets", "split_triggered_pct",
     ]
     split_fields = [

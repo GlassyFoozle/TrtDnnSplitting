@@ -201,9 +201,11 @@ class ProfilingStats:
             if mask_key is not None and mask_key not in self._seen_evaluated:
                 self._seen_evaluated.add(mask_key)
                 self.unique_masks_evaluated += 1
-        if result.did_build:
+        # Only count builds/exports that happened in THIS run (not historical
+        # values inherited from a cached eval record's built/exported fields).
+        if result.did_build and not result.cache_hit:
             self.builds_triggered += 1
-        if result.did_export:
+        if result.did_export and not result.cache_hit:
             self.exports_triggered += 1
         self.total_interval_cache_hits += result.interval_cache_hits
         self.total_interval_cache_misses += result.interval_cache_misses
@@ -211,9 +213,10 @@ class ProfilingStats:
         self.total_interval_onnx_cache_misses += result.interval_onnx_cache_misses
         self.total_interval_engine_cache_hits += result.interval_engine_cache_hits
         self.total_interval_engine_cache_misses += result.interval_engine_cache_misses
-        self.total_interval_engine_build_wall_s += result.interval_engine_build_wall_s
-        self.total_export_wall_s += result.export_wall_s
-        self.total_build_wall_s += result.build_wall_s
+        if not result.cache_hit:
+            self.total_interval_engine_build_wall_s += result.interval_engine_build_wall_s
+            self.total_export_wall_s += result.export_wall_s
+            self.total_build_wall_s += result.build_wall_s
         self.total_profile_wall_s += result.profile_wall_s
         if result.estimated_cold_total_s is not None:
             self.total_estimated_cold_s += result.estimated_cold_total_s

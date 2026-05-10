@@ -762,6 +762,21 @@ def evaluate_mask(
     -------
     EvaluationResult with timing data populated (or error set on failure).
     """
+    # ── 0. Early cache check (torch-free) ────────────────────────────────────
+    # For list masks we can compute the variant name and check the cache before
+    # importing selective_split (which imports torch at module level).
+    if not force and not dry_run and isinstance(mask, list) and variant_name is None:
+        _early_variant = mask_to_variant_name(model_name, list(mask))
+        _early_cached = _load_cached_result(model_name, _early_variant, precision)
+        if _early_cached is not None and _early_cached.ok():
+            print(f"\n[evaluator] {model_name}/{_early_variant}  ({precision})  → cache hit (early)")
+            return _early_cached
+    elif not force and not dry_run and isinstance(mask, list) and variant_name is not None:
+        _early_cached = _load_cached_result(model_name, variant_name, precision)
+        if _early_cached is not None and _early_cached.ok():
+            print(f"\n[evaluator] {model_name}/{variant_name}  ({precision})  → cache hit (early)")
+            return _early_cached
+
     from src.splitting.selective_split import (
         load_base_config, parse_boundary_mask,
         make_selected_split_config, save_selected_config,
