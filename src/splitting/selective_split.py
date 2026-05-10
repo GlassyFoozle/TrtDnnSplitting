@@ -200,6 +200,8 @@ def make_selected_split_config(
 
     groups = compute_merge_groups(mask)
 
+    # Variant-specific dirs kept only for the full_model metadata field (never built
+    # during mask evaluation; interval cache is the canonical artifact store).
     onnx_dir   = REPO / "artifacts" / "onnx"    / model_name / selected_name
     engine_dir = REPO / "artifacts" / "engines"  / model_name / selected_name
 
@@ -226,6 +228,10 @@ def make_selected_split_config(
         else:
             desc = f"{first_bc['chunk_name']}..{last_bc['chunk_name']} ({len(grp_chunk_ids)} merged)"
 
+        # Paths point directly to the interval cache so that multiple masks
+        # sharing an interval reference the same file with no per-variant copies.
+        int_dir = REPO / "artifacts" / "chunk_cache" / model_name / f"int_{src_ids[0]}_{src_ids[-1]}"
+
         chunk_cfgs.append({
             "id":                    grp_id,
             "name":                  f"chunk{grp_id}",
@@ -238,9 +244,9 @@ def make_selected_split_config(
             "covered_fx_nodes":      cov_fx,
             "input_shape":           first_bc["input_shape"],
             "output_shape":          last_bc["output_shape"],
-            "onnx":                  rel(onnx_dir / f"chunk{grp_id}.onnx"),
-            "engine_fp32":           rel(engine_dir / f"chunk{grp_id}_fp32.engine"),
-            "engine_fp16":           rel(engine_dir / f"chunk{grp_id}_fp16.engine"),
+            "onnx":                  rel(int_dir / "chunk.onnx"),
+            "engine_fp32":           rel(int_dir / "chunk_fp32.engine"),
+            "engine_fp16":           rel(int_dir / "chunk_fp16.engine"),
             "notes":                 "; ".join(
                 bc.get("notes", "") for bc in [base_chunks[i] for i in grp_chunk_ids]
                 if bc.get("notes", "")

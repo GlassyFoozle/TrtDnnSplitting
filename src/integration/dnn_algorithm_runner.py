@@ -131,7 +131,17 @@ class ProfilingStats:
     builds_triggered: int = 0
     exports_triggered: int = 0
     dry_run_evaluations: int = 0
-    skipped_cache_misses: int = 0   # live evals suppressed by LiveProfileBudget
+    skipped_cache_misses: int = 0   # attempt count (same mask may be counted >1×)
+    # Unique-mask counters (set-based, not attempt-count)
+    unique_masks_evaluated: int = 0
+    unique_mask_cache_hits: int = 0
+    unique_skipped_masks: int = 0
+    interval_timing_cache_hits: int = 0   # served from interval GPU timing (no re-profile)
+
+    # Private set-based tracking for unique-mask counters (excluded from to_dict repr)
+    _seen_evaluated: set = field(default_factory=set, repr=False, compare=False)
+    _seen_cache_hits: set = field(default_factory=set, repr=False, compare=False)
+    _seen_skipped: set = field(default_factory=set, repr=False, compare=False)
 
     # Interval-level cache accounting
     total_interval_cache_hits: int = 0
@@ -154,10 +164,28 @@ class ProfilingStats:
             # K=1 baseline uses pre-profiled dag_aligned_full; no TRT pipeline
             self.baseline_k1_hits += 1
             return
+
+        mask_key = tuple(result.mask) if result.mask is not None else None
+
         if result.dry_run:
             self.dry_run_evaluations += 1
+        elif getattr(result, "interval_timing_cache_hit", False):
+            self.cache_hits += 1
+            self.interval_timing_cache_hits += 1
+            if mask_key is not None and mask_key not in self._seen_evaluated:
+                self._seen_evaluated.add(mask_key)
+                self.unique_masks_evaluated += 1
+            if mask_key is not None and mask_key not in self._seen_cache_hits:
+                self._seen_cache_hits.add(mask_key)
+                self.unique_mask_cache_hits += 1
         elif result.cache_hit:
             self.cache_hits += 1
+            if mask_key is not None and mask_key not in self._seen_evaluated:
+                self._seen_evaluated.add(mask_key)
+                self.unique_masks_evaluated += 1
+            if mask_key is not None and mask_key not in self._seen_cache_hits:
+                self._seen_cache_hits.add(mask_key)
+                self.unique_mask_cache_hits += 1
         elif result.error in (
             "cache_miss_live_disabled",
             "global_budget_exhausted",
@@ -165,8 +193,14 @@ class ProfilingStats:
             "stopped_on_first_build",
         ):
             self.skipped_cache_misses += 1
+            if mask_key is not None and mask_key not in self._seen_skipped:
+                self._seen_skipped.add(mask_key)
+                self.unique_skipped_masks += 1
         else:
             self.real_profiles += 1
+            if mask_key is not None and mask_key not in self._seen_evaluated:
+                self._seen_evaluated.add(mask_key)
+                self.unique_masks_evaluated += 1
         if result.did_build:
             self.builds_triggered += 1
         if result.did_export:
@@ -194,6 +228,10 @@ class ProfilingStats:
             "exports_triggered": self.exports_triggered,
             "dry_run_evaluations": self.dry_run_evaluations,
             "skipped_cache_misses": self.skipped_cache_misses,
+            "unique_masks_evaluated": self.unique_masks_evaluated,
+            "unique_mask_cache_hits": self.unique_mask_cache_hits,
+            "unique_skipped_masks": self.unique_skipped_masks,
+            "interval_timing_cache_hits": self.interval_timing_cache_hits,
             "total_interval_cache_hits": self.total_interval_cache_hits,
             "total_interval_cache_misses": self.total_interval_cache_misses,
             "total_interval_onnx_cache_hits": self.total_interval_onnx_cache_hits,

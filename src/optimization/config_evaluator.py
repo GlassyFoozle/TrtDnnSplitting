@@ -157,6 +157,23 @@ class EvaluationResult:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
+# ── Boundary-mask helpers (torch-free; mirrors selective_split.compute_merge_groups) ──
+
+def _compute_merge_groups(mask: List[int]) -> List[List[int]]:
+    """Given a boundary mask of length N-1, return groups of consecutive base-chunk indices."""
+    n_chunks = len(mask) + 1
+    groups: List[List[int]] = []
+    current: List[int] = [0]
+    for boundary_idx, bit in enumerate(mask):
+        if bit == 1:
+            groups.append(current)
+            current = [boundary_idx + 1]
+        else:
+            current.append(boundary_idx + 1)
+    groups.append(current)
+    return groups
+
+
 # ── Variant naming ─────────────────────────────────────────────────────────────
 
 def mask_to_variant_name(model_name: str, mask: List[int]) -> str:
@@ -232,11 +249,11 @@ def _export_chunks_with_interval_cache(
     device: str = "cuda",
 ) -> Tuple[int, int, float]:
     """
-    Export ONNX for each chunk, using interval cache where possible.
+    Export ONNX for each chunk, using the interval cache as the canonical store.
 
-    For chunks with a cached ONNX, copies from the interval cache directory to
-    the variant-specific path and skips export_module().  For cache misses,
-    calls export_module() inline (no subprocess) and populates the interval cache.
+    Since config chunk paths now point directly to the interval cache directory,
+    a cache hit means the file already exists at the config path — no copy needed.
+    For cache misses, exports directly to the interval cache path.
 
     Returns (interval_onnx_hits, interval_onnx_misses, total_export_wall_s).
     """
@@ -249,13 +266,10 @@ def _export_chunks_with_interval_cache(
     needs_export: List[int] = []
 
     for i, grp in enumerate(groups):
-        int_onnx = _interval_onnx_path(model_name, grp)
-        var_onnx = REPO / chunk_configs[i]["onnx"]
-        if not force and int_onnx.exists():
-            var_onnx.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(int_onnx, var_onnx)
-        elif not force and var_onnx.exists():
-            pass  # already present from a previous run
+        # Config path IS the interval cache path — no copy needed on hit.
+        onnx_path = REPO / chunk_configs[i]["onnx"]
+        if not force and onnx_path.exists():
+            pass  # cache hit
         else:
             needs_export.append(i)
 
@@ -277,7 +291,7 @@ def _export_chunks_with_interval_cache(
     for i in needs_export:
         grp = groups[i]
         chunk_cfg = chunk_configs[i]
-        var_onnx = REPO / chunk_cfg["onnx"]
+        onnx_path = REPO / chunk_cfg["onnx"]  # interval cache path
         in_shape = tuple(chunk_cfg["input_shape"])
 
         base_modules = [base_specs[j].module for j in grp]
@@ -285,59 +299,16 @@ def _export_chunks_with_interval_cache(
 
         print(f"  [export] chunk{i} base_chunks={grp}")
         t0 = time.perf_counter()
-        export_module(merged_mod, in_shape, var_onnx, device=device)
+        onnx_path.parent.mkdir(parents=True, exist_ok=True)
+        export_module(merged_mod, in_shape, onnx_path, device=device)
         wall = time.perf_counter() - t0
         total_wall += wall
-
-        # Populate interval ONNX cache
-        int_onnx = _interval_onnx_path(model_name, grp)
-        int_onnx.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(var_onnx, int_onnx)
 
         timing = _load_interval_timing(model_name, grp)
         timing.update({"model": model_name, "source_chunk_ids": grp, "export_wall_s": wall})
         _save_interval_timing(model_name, grp, timing)
 
     return cache_hits, cache_misses, total_wall
-
-
-def _check_interval_engine_cache(
-    model_name: str,
-    cfg: dict,
-    groups: List[List[int]],
-    precision: str,
-    force: bool = False,
-) -> int:
-    """
-    For each chunk, copy engine from interval cache to variant path if available.
-    Returns the number of chunks that were served from the interval cache.
-    """
-    chunk_configs = cfg["chunks"]
-    hits = 0
-    for i, grp in enumerate(groups):
-        int_eng = _interval_engine_path(model_name, grp, precision)
-        var_eng = REPO / chunk_configs[i][f"engine_{precision}"]
-        if not force and int_eng.exists():
-            var_eng.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(int_eng, var_eng)
-            hits += 1
-    return hits
-
-
-def _populate_interval_engine_cache(
-    model_name: str,
-    cfg: dict,
-    groups: List[List[int]],
-    precision: str,
-) -> None:
-    """Copy newly built engines to the interval cache (called after build_engines())."""
-    chunk_configs = cfg["chunks"]
-    for i, grp in enumerate(groups):
-        var_eng = REPO / chunk_configs[i][f"engine_{precision}"]
-        int_eng = _interval_engine_path(model_name, grp, precision)
-        if var_eng.exists() and not int_eng.exists():
-            int_eng.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(var_eng, int_eng)
 
 
 def _build_engines_with_interval_cache(
@@ -348,10 +319,11 @@ def _build_engines_with_interval_cache(
     force: bool = False,
 ) -> Tuple[int, int, float]:
     """
-    Build TRT engines per-chunk, using interval cache where possible.
+    Build TRT engines per-chunk, using the interval cache as the canonical store.
 
-    For each chunk: if interval engine cache exists, copy it. Otherwise call
-    build_single_engine() and populate the interval cache with the result + timing.
+    Since config chunk paths now point directly to the interval cache directory,
+    a cache hit means the engine file already exists — no copy needed.
+    For cache misses, builds directly to the interval cache path.
 
     Returns (engine_cache_hits, engine_cache_misses, total_build_wall_s).
     Fails fast (returns immediately) if any per-chunk build fails.
@@ -364,31 +336,21 @@ def _build_engines_with_interval_cache(
     total_wall = 0.0
 
     for i, grp in enumerate(groups):
-        int_eng = _interval_engine_path(model_name, grp, precision)
-        var_eng = REPO / chunk_configs[i][f"engine_{precision}"]
-        var_onnx = REPO / chunk_configs[i]["onnx"]
+        # Config path IS the interval cache path — no copy needed.
+        eng_path  = REPO / chunk_configs[i][f"engine_{precision}"]
+        onnx_path = REPO / chunk_configs[i]["onnx"]
 
-        if not force and int_eng.exists():
-            var_eng.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(int_eng, var_eng)
+        if not force and eng_path.exists():
             hits += 1
             print(f"  [interval_cache] chunk{i} engine from cache (base_chunks={grp})")
-        elif not force and var_eng.exists():
-            # Present from a previous run; backfill interval cache
-            if not int_eng.exists():
-                int_eng.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(var_eng, int_eng)
-            hits += 1
         else:
-            # Cache miss: build per-chunk via trtexec
-            ok, wall = build_single_engine(var_onnx, var_eng, precision=precision)
+            # Cache miss: build directly into the interval cache directory.
+            eng_path.parent.mkdir(parents=True, exist_ok=True)
+            ok, wall = build_single_engine(onnx_path, eng_path, precision=precision)
             total_wall += wall
             if not ok:
                 return hits, misses + 1, total_wall
             misses += 1
-            # Populate interval cache with engine + build timing
-            int_eng.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(var_eng, int_eng)
             timing = _load_interval_timing(model_name, grp)
             timing.update({f"build_{precision}_wall_s": wall})
             _save_interval_timing(model_name, grp, timing)
@@ -424,6 +386,153 @@ def _estimate_cold_cost(
             total_export + total_build + actual_profile_wall_s if has_data else None
         ),
     }
+
+
+# ── Interval GPU timing helpers ────────────────────────────────────────────────
+
+def _backfill_interval_gpu_timing(
+    model_name: str,
+    groups: List[List[int]],
+    precision: str,
+    result: "EvaluationResult",
+) -> None:
+    """After profiling, write per-chunk GPU timing into each interval's timing.json.
+
+    This enables cache-only assembly (Task D): once all required intervals for a
+    mask have gpu_mean_ms + gpu_p99_ms, the mask can be served without re-profiling.
+    """
+    means = result.per_chunk_gpu_mean_ms or []
+    p99s  = result.per_chunk_gpu_p99_ms  or []
+    if not means or len(means) != len(groups):
+        return
+    for i, grp in enumerate(groups):
+        t = _load_interval_timing(model_name, grp)
+        t.update({
+            "model":           model_name,
+            "source_chunk_ids": grp,
+            "start_idx":       grp[0],
+            "end_idx":         grp[-1],
+            "precision":       precision,
+            f"gpu_mean_ms_{precision}": means[i],
+            f"gpu_p99_ms_{precision}":  p99s[i] if i < len(p99s) else means[i],
+        })
+        _save_interval_timing(model_name, grp, t)
+
+
+def can_assemble_from_intervals(
+    model_name: str,
+    mask: List[int],
+    precision: str,
+) -> bool:
+    """Return True if all required interval timing.json files have GPU timing data.
+
+    Used by cache-only mode to serve masks without re-profiling.
+    """
+    groups = _compute_merge_groups(mask)
+    for grp in groups:
+        t = _load_interval_timing(model_name, grp)
+        if not (t.get(f"gpu_mean_ms_{precision}") and t.get(f"gpu_p99_ms_{precision}")):
+            return False
+    return True
+
+
+def assemble_from_intervals(
+    model_name: str,
+    mask: List[int],
+    precision: str,
+    base_variant: str = "dag_aligned_full",
+) -> "EvaluationResult":
+    """
+    Assemble an EvaluationResult from per-interval GPU timing data.
+
+    Called when the mask-level eval JSON is missing but all intervals have timing.
+    Writes the assembled result to results/evaluations/ so future calls hit cache.
+    """
+    variant_name = mask_to_variant_name(model_name, mask)
+    groups = _compute_merge_groups(mask)
+    n_chunks = len(groups)
+
+    means = []
+    p99s  = []
+    for grp in groups:
+        t = _load_interval_timing(model_name, grp)
+        means.append(float(t.get(f"gpu_mean_ms_{precision}", 0.0)))
+        p99s.append(float(t.get(f"gpu_p99_ms_{precision}", 0.0)))
+
+    chunked_mean = sum(means) if means else None
+    chunked_p99  = sum(p99s)  if p99s  else None
+
+    result = EvaluationResult(
+        model_name=model_name,
+        variant_name=variant_name,
+        base_variant=base_variant,
+        precision=precision,
+        mask=list(mask),
+        groups=groups,
+        n_chunks=n_chunks,
+        exported=False,
+        built=False,
+        profiled=False,
+        cache_hit=True,
+        chunked_gpu_mean_ms=chunked_mean,
+        chunked_gpu_p99_ms=chunked_p99,
+        per_chunk_gpu_mean_ms=means,
+        per_chunk_gpu_p99_ms=p99s,
+        notes="assembled_from_interval_timing",
+    )
+    out = _save_result(result)
+    result.result_json_path = str(out.relative_to(REPO))
+    out.write_text(json.dumps(result.to_dict(), indent=2))
+    return result
+
+
+def backfill_interval_gpu_timing_from_evals(
+    model_name: str,
+    precision: str = "fp32",
+) -> int:
+    """
+    One-time utility: populate interval timing.json GPU fields from existing
+    results/evaluations/ JSONs.  Returns number of intervals updated.
+    """
+    from src.splitting.selective_split import compute_merge_groups
+    eval_dir = REPO / "results" / "evaluations" / model_name
+    if not eval_dir.exists():
+        return 0
+    updated = 0
+    for p in sorted(eval_dir.glob(f"*_{precision}.json")):
+        if p.stem.endswith("_cpp_raw"):
+            continue
+        try:
+            d = json.loads(p.read_text())
+        except Exception:
+            continue
+        if d.get("error"):
+            continue
+        mask  = d.get("mask", [])
+        means = d.get("per_chunk_gpu_mean_ms") or []
+        p99s  = d.get("per_chunk_gpu_p99_ms")  or []
+        if not mask or not means:
+            continue
+        groups = compute_merge_groups(mask)
+        if len(means) != len(groups):
+            continue
+        for i, grp in enumerate(groups):
+            t = _load_interval_timing(model_name, grp)
+            key_mean = f"gpu_mean_ms_{precision}"
+            key_p99  = f"gpu_p99_ms_{precision}"
+            if t.get(key_mean) is None:
+                t.update({
+                    "model":            model_name,
+                    "source_chunk_ids": grp,
+                    "start_idx":        grp[0],
+                    "end_idx":          grp[-1],
+                    "precision":        precision,
+                    key_mean:           means[i],
+                    key_p99:            p99s[i] if i < len(p99s) else means[i],
+                })
+                _save_interval_timing(model_name, grp, t)
+                updated += 1
+    return updated
 
 
 # ── Mask-level cache helpers ───────────────────────────────────────────────────
@@ -822,6 +931,9 @@ def evaluate_mask(
     result.per_chunk_gpu_p99_ms = timing.get("per_chunk_gpu_p99_ms")
     result.per_chunk_cpu_wall_mean_ms = timing.get("per_chunk_cpu_wall_mean_ms")
     result.per_chunk_cpu_wall_p99_ms = timing.get("per_chunk_cpu_wall_p99_ms")
+
+    # Backfill per-interval GPU timing so cache-only mode can assemble masks.
+    _backfill_interval_gpu_timing(model_name, groups, precision, result)
 
     if result.full_gpu_mean_ms and result.chunked_gpu_mean_ms:
         result.overhead_ms = result.chunked_gpu_mean_ms - result.full_gpu_mean_ms

@@ -99,15 +99,18 @@ def test_algorithm_set_uni_only():
 # ── Per-interval engine cache ─────────────────────────────────────────────────
 
 def _make_fake_cfg(tmp_path: Path, model: str, variant: str, groups: list) -> dict:
+    """Build a minimal config dict using interval cache paths (the new canonical layout)."""
+    from src.optimization.config_evaluator import _interval_onnx_path, _interval_engine_path
     chunks = []
     for i, grp in enumerate(groups):
-        onnx = f"artifacts/onnx/{model}/{variant}/chunk{i}.onnx"
-        eng32 = f"artifacts/engines/{model}/{variant}/chunk{i}_fp32.engine"
-        eng16 = f"artifacts/engines/{model}/{variant}/chunk{i}_fp16.engine"
+        onnx_abs  = _interval_onnx_path(model, grp)
+        eng32_abs = _interval_engine_path(model, grp, "fp32")
+        eng16_abs = _interval_engine_path(model, grp, "fp16")
+        # Config stores paths relative to REPO (= tmp_path in tests)
         chunks.append({
-            "onnx": onnx,
-            "engine_fp32": eng32,
-            "engine_fp16": eng16,
+            "onnx": str(onnx_abs.relative_to(tmp_path)),
+            "engine_fp32": str(eng32_abs.relative_to(tmp_path)),
+            "engine_fp16": str(eng16_abs.relative_to(tmp_path)),
             "source_chunk_ids": grp,
             "input_shape": [1, 3, 224, 224],
         })
@@ -151,7 +154,7 @@ def test_build_engines_with_interval_cache_all_miss(monkeypatch, tmp_path):
 
 
 def test_build_engines_with_interval_cache_all_hit(monkeypatch, tmp_path):
-    """When all engines are in interval cache, build_single_engine is never called."""
+    """When all engines are in interval cache (= config paths), build_single_engine is never called."""
     monkeypatch.setattr("src.optimization.config_evaluator.REPO", tmp_path)
 
     import src.optimization.compiler as compiler_mod
@@ -164,12 +167,11 @@ def test_build_engines_with_interval_cache_all_hit(monkeypatch, tmp_path):
     groups = [[0], [1, 2]]
     cfg = _make_fake_cfg(tmp_path, "alexnet", "v1", groups)
 
-    # Pre-populate interval engine cache
-    from src.optimization.config_evaluator import _interval_engine_path
-    for grp in groups:
-        int_eng = _interval_engine_path("alexnet", grp, "fp32")
-        int_eng.parent.mkdir(parents=True, exist_ok=True)
-        int_eng.write_bytes(b"cached_engine")
+    # Pre-populate the interval engine cache — same paths the config now references.
+    for chunk_cfg in cfg["chunks"]:
+        eng = tmp_path / chunk_cfg["engine_fp32"]
+        eng.parent.mkdir(parents=True, exist_ok=True)
+        eng.write_bytes(b"cached_engine")
 
     from src.optimization.config_evaluator import _build_engines_with_interval_cache
     hits, misses, wall = _build_engines_with_interval_cache(
@@ -180,7 +182,7 @@ def test_build_engines_with_interval_cache_all_hit(monkeypatch, tmp_path):
     assert misses == 0
     assert wall == 0.0
 
-    # Verify engines were copied to variant paths
+    # Engine files remain in place (no copy step needed in new architecture).
     for chunk_cfg in cfg["chunks"]:
         eng = tmp_path / chunk_cfg["engine_fp32"]
         assert eng.exists()

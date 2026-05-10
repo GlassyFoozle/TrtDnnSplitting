@@ -54,6 +54,7 @@ class MaskApplicationResult:
     interval_onnx_cache_misses: int = 0
     interval_engine_cache_hits: int = 0
     interval_engine_cache_misses: int = 0
+    interval_timing_cache_hit: bool = False  # served from interval GPU timing (no re-profile)
 
     # Wall-clock timing per pipeline phase (0.0 when not measured)
     export_wall_s: float = 0.0
@@ -166,12 +167,40 @@ def evaluate_and_apply_mask(
     # ── live budget pre-check (real eval only) ────────────────────────────────
     live_cache_miss_variant = ""
     if live_budget is not None:
-        from src.optimization.config_evaluator import is_mask_cached, mask_to_variant_name
+        from src.optimization.config_evaluator import (
+            is_mask_cached, mask_to_variant_name,
+            can_assemble_from_intervals, assemble_from_intervals,
+        )
         if not is_mask_cached(dnn_task.model_name, mask, precision):
             variant_name = mask_to_variant_name(dnn_task.model_name, mask)
             live_cache_miss_variant = variant_name
             reason = live_budget.check_before_real_eval(dnn_task.model_name, variant_name)
             if reason is not None:
+                # Try assembling from interval timing before accepting skip.
+                if can_assemble_from_intervals(dnn_task.model_name, mask, precision):
+                    assembled = assemble_from_intervals(
+                        dnn_task.model_name, mask, precision
+                    )
+                    if assembled.ok():
+                        if wcet_metric == "p99":
+                            chunk_times = assembled.per_chunk_gpu_p99_ms or []
+                        else:
+                            chunk_times = assembled.per_chunk_gpu_mean_ms or []
+                        if chunk_times and len(chunk_times) == k:
+                            _patch_seg_task(seg_task, seg, mask, chunk_times, segment_idx)
+                            dnn_task.current_chunk_times_ms = list(chunk_times)
+                            dnn_task.selected_variant_name = assembled.variant_name
+                            # Count as interval timing cache hit (not skip)
+                            return MaskApplicationResult(
+                                success=True, mask=list(mask), k_chunks=k,
+                                cache_hit=True,
+                                interval_timing_cache_hit=True,
+                                selected_chunk_times=list(chunk_times),
+                                max_block=max(chunk_times),
+                                total_gpu=sum(chunk_times),
+                                variant_name=assembled.variant_name,
+                                profile_result_path=assembled.result_json_path,
+                            )
                 live_budget.record_skip()
                 chunk_times = _apply_mask_to_chunk_times(
                     seg.base_block_list, mask

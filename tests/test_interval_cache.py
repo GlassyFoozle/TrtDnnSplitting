@@ -94,61 +94,41 @@ def test_estimate_cold_cost_with_data(monkeypatch, tmp_path):
     assert result["estimated_cold_total_s"] == pytest.approx(15.0)  # 3+7+5
 
 
-# ── Engine interval cache check/populate ─────────────────────────────────────
+# ── Engine interval cache (path-consolidation architecture) ───────────────────
 
-def _make_fake_config(tmp_path: Path, model: str, variant: str, groups: list) -> dict:
-    """Build a minimal cfg dict with real paths in tmp_path."""
-    chunks = []
-    for i, grp in enumerate(groups):
-        onnx = tmp_path / "artifacts" / "onnx" / model / variant / f"chunk{i}.onnx"
-        eng32 = tmp_path / "artifacts" / "engines" / model / variant / f"chunk{i}_fp32.engine"
-        eng16 = tmp_path / "artifacts" / "engines" / model / variant / f"chunk{i}_fp16.engine"
-        chunks.append({
-            "onnx": str(onnx.relative_to(tmp_path)),
-            "engine_fp32": str(eng32.relative_to(tmp_path)),
-            "engine_fp16": str(eng16.relative_to(tmp_path)),
-            "source_chunk_ids": grp,
-            "input_shape": [1, 3, 224, 224],
-        })
-    return {"chunks": chunks, "merged_groups": groups}
-
-
-def test_engine_cache_check_no_cache(monkeypatch, tmp_path):
-    """_check_interval_engine_cache returns 0 when interval cache is empty."""
+def test_interval_engine_path_is_canonical(monkeypatch, tmp_path):
+    """
+    _interval_engine_path returns a path inside artifacts/chunk_cache, not
+    inside artifacts/engines/.  The path is stable — two calls with the same
+    arguments return the same result (no per-variant copies).
+    """
     monkeypatch.setattr("src.optimization.config_evaluator.REPO", tmp_path)
-    from src.optimization.config_evaluator import _check_interval_engine_cache
+    from src.optimization.config_evaluator import _interval_engine_path
+
+    p1 = _interval_engine_path("alexnet", [0], "fp32")
+    p2 = _interval_engine_path("alexnet", [0], "fp32")
+    assert p1 == p2, "same interval must always map to same path"
+    assert "chunk_cache" in str(p1), "engine must be inside chunk_cache"
+    assert "engines" not in str(p1).replace("chunk_cache", ""), \
+        "engine must not be in a separate /engines/ tree"
+
+
+def test_interval_engine_exists_after_write(monkeypatch, tmp_path):
+    """
+    After writing a fake engine to the interval cache path, the path exists
+    and can be read back without any copy step.
+    """
+    monkeypatch.setattr("src.optimization.config_evaluator.REPO", tmp_path)
+    from src.optimization.config_evaluator import _interval_engine_path
 
     groups = [[0], [1, 2, 3]]
-    cfg = _make_fake_config(tmp_path, "alexnet", "v_test", groups)
-    hits = _check_interval_engine_cache("alexnet", cfg, groups, "fp32")
-    assert hits == 0
-
-
-def test_engine_cache_populate_then_check(monkeypatch, tmp_path):
-    """Populate interval engine cache, then check that the cache is hit."""
-    monkeypatch.setattr("src.optimization.config_evaluator.REPO", tmp_path)
-    from src.optimization.config_evaluator import (
-        _check_interval_engine_cache, _populate_interval_engine_cache,
-    )
-
-    groups = [[0], [1, 2, 3]]
-    cfg = _make_fake_config(tmp_path, "alexnet", "v_test", groups)
-
-    # Create fake engine files in variant paths
-    for chunk_cfg in cfg["chunks"]:
-        eng = tmp_path / chunk_cfg["engine_fp32"]
+    for grp in groups:
+        eng = _interval_engine_path("alexnet", grp, "fp32")
         eng.parent.mkdir(parents=True, exist_ok=True)
         eng.write_bytes(b"fake_engine")
 
-    _populate_interval_engine_cache("alexnet", cfg, groups, "fp32")
-
-    # Now create a second variant config using the same intervals
-    cfg2 = _make_fake_config(tmp_path, "alexnet", "v_test2", groups)
-    hits = _check_interval_engine_cache("alexnet", cfg2, groups, "fp32")
-    assert hits == len(groups), "all engines should be served from interval cache"
-
-    # Verify the engine files were actually copied to the new variant paths
-    for chunk_cfg in cfg2["chunks"]:
-        eng = tmp_path / chunk_cfg["engine_fp32"]
-        assert eng.exists(), f"engine missing: {eng}"
+    # Both intervals are present — no copy needed
+    for grp in groups:
+        eng = _interval_engine_path("alexnet", grp, "fp32")
+        assert eng.exists()
         assert eng.read_bytes() == b"fake_engine"

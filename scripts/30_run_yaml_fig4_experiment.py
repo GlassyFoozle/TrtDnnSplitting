@@ -42,6 +42,21 @@ from src.integration.dnn_workload_generator import WorkloadConfig, generate_task
 from src.integration.live_budget import LiveProfileBudget
 
 
+def _check_min_free_gb(min_free_gb: float | None) -> None:
+    """Raise RuntimeError if free disk space on the REPO filesystem is below min_free_gb."""
+    if min_free_gb is None:
+        return
+    import shutil as _shutil
+    usage = _shutil.disk_usage(REPO)
+    free_gb = usage.free / (1 << 30)
+    if free_gb < min_free_gb:
+        raise RuntimeError(
+            f"Disk guard: only {free_gb:.1f} GB free on {REPO} filesystem "
+            f"(--min-free-gb {min_free_gb}).  "
+            f"Run:  python scripts/22_clean_generated_artifacts.py --onnx --engines --yes"
+        )
+
+
 AlgorithmSpec = Tuple[str, str, str]
 TasksetEntry = Tuple[float, Path]
 
@@ -181,6 +196,15 @@ def parse_args() -> argparse.Namespace:
         help="Development/CI only: fall back to equal-weight WCET/N when "
              "base chunk profiling data is missing (produces approximate results). "
              "Requires running scripts/21_profile_base_chunks.py for accurate results.",
+    )
+    ap.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=None,
+        dest="min_free_gb",
+        metavar="N",
+        help="Abort before live build/profile if free disk space on REPO filesystem "
+             "is below N GB.  Ignored in dry-run mode.",
     )
     return ap.parse_args()
 
@@ -799,6 +823,9 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     algorithm_list = _build_algorithm_list(args)
+
+    if args.live:
+        _check_min_free_gb(getattr(args, "min_free_gb", None))
 
     live_budget: Optional[LiveProfileBudget] = None
     if args.live:
