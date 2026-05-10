@@ -73,6 +73,7 @@ class MaskApplicationResult:
     # Paths
     profile_result_path: str = ""
     variant_name: str = ""
+    model_name: str = ""
 
     error: Optional[str] = None
 
@@ -209,6 +210,7 @@ def evaluate_and_apply_mask(
                 dnn_task.current_chunk_times_ms = list(chunk_times)
                 return MaskApplicationResult(
                     success=False, mask=list(mask), k_chunks=k,
+                    model_name=dnn_task.model_name,
                     error=reason,
                 )
             print(

@@ -142,6 +142,8 @@ class ProfilingStats:
     _seen_evaluated: set = field(default_factory=set, repr=False, compare=False)
     _seen_cache_hits: set = field(default_factory=set, repr=False, compare=False)
     _seen_skipped: set = field(default_factory=set, repr=False, compare=False)
+    # Per-model skipped masks — {model: [mask_list, ...]} for diagnostic use
+    _skipped_by_model: dict = field(default_factory=dict, repr=False, compare=False)
 
     # Interval-level cache accounting
     total_interval_cache_hits: int = 0
@@ -196,6 +198,11 @@ class ProfilingStats:
             if mask_key is not None and mask_key not in self._seen_skipped:
                 self._seen_skipped.add(mask_key)
                 self.unique_skipped_masks += 1
+                model = getattr(result, "model_name", "") or ""
+                if model:
+                    if model not in self._skipped_by_model:
+                        self._skipped_by_model[model] = []
+                    self._skipped_by_model[model].append(list(mask_key))
         else:
             self.real_profiles += 1
             if mask_key is not None and mask_key not in self._seen_evaluated:
@@ -235,6 +242,7 @@ class ProfilingStats:
             "unique_mask_cache_hits": self.unique_mask_cache_hits,
             "unique_skipped_masks": self.unique_skipped_masks,
             "interval_timing_cache_hits": self.interval_timing_cache_hits,
+            "skipped_masks_detail": self._skipped_by_model,
             "total_interval_cache_hits": self.total_interval_cache_hits,
             "total_interval_cache_misses": self.total_interval_cache_misses,
             "total_interval_onnx_cache_hits": self.total_interval_onnx_cache_hits,
