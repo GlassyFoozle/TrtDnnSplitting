@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 """
-15_compare_k1_timing_semantics.py — Verify K=1 timing consistency between
-task generation and RTA analysis.
+15_compare_k1_timing_semantics.py — Inspect K=1 timing used by workload
+generation.
 
 Prints, for each model:
   - Whether profiling data is available (results/table4/)
-  - The G value used by task generation (from profiling cache, or fallback)
-  - The G value seen by RTA analysis (sum of per-chunk p99 from candidate_space)
+  - The K=1 G value used by task generation
+  - The dag_aligned_full chunk-sum value used as split candidate metadata
   - Source of each G value
-  - Whether generation G == analysis G (consistent) or not
 
-Consistent means both sources use the same profiled data. After running
-scripts/21_profile_base_chunks.py, both should reflect real Jetson measurements.
+Generation must use measured all-zero K=1 timing when available. The
+dag_aligned_full sum is reported only to show how different fully split metadata
+can be from actual no-split execution.
 """
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -26,40 +25,20 @@ sys.path.insert(0, str(REPO))
 MODELS = ["alexnet", "resnet18", "vgg19"]
 PRECISION = "fp32"
 
-_FALLBACK_WCET_MS = {"alexnet": 1.754, "resnet18": 1.037, "vgg19": 7.562}
-
-
 def _gen_g_source(model: str, precision: str) -> str:
     """Return a human-readable string describing where _get_base_gpu_wcet_ms got its value."""
-    from src.optimization.profiling_db import ProfilingDB
+    from src.optimization.config_evaluator import mask_to_variant_name
+    from src.integration.dnn_workload_generator import _get_base_chunk_count
 
-    cache_path = REPO / "results" / "optimization" / ".profiling_cache.json"
-    if cache_path.exists():
-        try:
-            data = json.loads(cache_path.read_text())
-            key = f"{model.lower()}|dag_aligned_full|{precision}"
-            entry = data.get("entries", {}).get(key)
-            if entry:
-                p99 = entry.get("per_chunk_gpu_p99_ms")
-                if p99:
-                    return "profiling cache (p99)"
-                mean = entry.get("per_chunk_gpu_mean_ms")
-                if mean:
-                    return "profiling cache (mean)"
-        except Exception:
-            pass
+    n_base = _get_base_chunk_count(model)
+    if n_base:
+        mask = [0] * (n_base - 1)
+        variant = mask_to_variant_name(model, mask)
+        eval_json = REPO / "results" / "evaluations" / model / f"{variant}_{precision}.json"
+        if eval_json.exists():
+            return f"measured K=1 evaluation JSON ({eval_json.name})"
 
-    eval_dir = REPO / "results" / "evaluations" / model.lower()
-    if eval_dir.exists():
-        for f in sorted(eval_dir.glob("*.json")):
-            try:
-                d = json.loads(f.read_text())
-                if d.get("mask") and sum(d["mask"]) == 0:
-                    return f"evaluation JSON ({f.name})"
-            except Exception:
-                continue
-
-    return "hardcoded fallback (_DRY_RUN_BASE_WCET_MS)"
+    return "dry-run reference fallback (_DRY_RUN_BASE_WCET_MS)"
 
 
 def main() -> int:
@@ -78,45 +57,46 @@ def main() -> int:
         p = REPO / "results" / "table4" / f"{model}_cpp_dag_aligned_full_{PRECISION}.json"
         has_table4[model] = p.exists()
 
-    header = (f"{'Model':<12}  {'Table4':6}  {'Gen G (ms)':>12}  "
-              f"{'RTA G (ms)':>12}  {'N':>4}  {'Consistent':>10}")
+    header = (f"{'Model':<12}  {'Table4':6}  {'Gen K1 G':>12}  "
+              f"{'DagFull sum':>12}  {'N':>4}  {'Delta':>12}")
     print(header)
-    print("-" * 64)
+    print("-" * 68)
 
-    all_consistent = True
+    all_has_gen = True
     rows = []
     for model in MODELS:
         cs = load_candidate_space(model, PRECISION)
         gen_g = _get_base_gpu_wcet_ms(model, PRECISION, "p99")
-        rta_g = sum(cs.chunk_gpu_p99_ms)
+        dag_sum = sum(cs.chunk_gpu_p99_ms)
         n = cs.candidate_count
-        consistent = gen_g is not None and abs(gen_g - rta_g) < 0.001
-        if not consistent:
-            all_consistent = False
+        if gen_g is None:
+            all_has_gen = False
         table4 = "YES" if has_table4[model] else "no"
-        status = "OK" if consistent else "MISMATCH"
+        delta = (dag_sum - gen_g) if gen_g is not None else 0.0
         gen_source = _gen_g_source(model, PRECISION)
         print(
-            f"{model:<12}  {table4:<6}  {gen_g or 0.0:>12.4f}  {rta_g:>12.4f}  "
-            f"{n:>4}  {status:>10}"
+            f"{model:<12}  {table4:<6}  {gen_g or 0.0:>12.4f}  {dag_sum:>12.4f}  "
+            f"{n:>4}  {delta:>12.4f}"
         )
-        rows.append((model, gen_g, rta_g, gen_source, consistent))
+        rows.append((model, gen_g, dag_sum, gen_source))
 
     print()
 
     # Per-model source detail
-    for model, gen_g, rta_g, gen_source, consistent in rows:
+    for model, gen_g, dag_sum, gen_source in rows:
         print(f"  {model}:  Gen G source = {gen_source}")
-        if not consistent:
-            print(f"    WARNING: Gen G={gen_g:.4f}ms  RTA G={rta_g:.4f}ms  diff={abs((gen_g or 0)-rta_g):.4f}ms")
+        if gen_g is not None and abs(gen_g - dag_sum) > 0.001:
+            print(
+                f"    note: K1={gen_g:.4f}ms differs from dag_aligned_full sum="
+                f"{dag_sum:.4f}ms by {abs(gen_g - dag_sum):.4f}ms"
+            )
 
     print()
 
-    if all_consistent:
-        print("RESULT: Generation and analysis G are consistent.")
-        print("        Schedulability experiments will use real profiled WCET values.")
+    if all_has_gen:
+        print("RESULT: Workload generation has a K=1 timing source for every model.")
     else:
-        print("RESULT: INCONSISTENCY DETECTED.")
+        print("RESULT: K=1 TIMING MISSING.")
         print()
         # Diagnose the specific failure mode
         cache_path = REPO / "results" / "optimization" / ".profiling_cache.json"
@@ -152,7 +132,7 @@ def main() -> int:
               f"{'...' if cs.candidate_count > 5 else ''}]")
         print()
 
-    return 0 if all_consistent else 1
+    return 0 if all_has_gen else 1
 
 
 if __name__ == "__main__":

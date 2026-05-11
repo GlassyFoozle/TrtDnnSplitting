@@ -88,63 +88,152 @@ def _get_base_gpu_wcet_ms(
     precision: str = "fp32",
     wcet_metric: str = "p99",
     profiling_db=None,
+    profile_missing_k1: bool = False,
+    warmup: int = 20,
+    iters: int = 200,
 ) -> Optional[float]:
     """
-    Get the K=1 (no-split) GPU WCET for a model.
+    Get the measured K=1 (no-split) GPU WCET for a model.
 
     Strategy (in order):
-    1. ProfilingDB.get(model, "dag_aligned_full", precision) — sum of per-chunk times.
-       This is the standard pre-profiled baseline variant; no K=1 evaluation is needed.
-    2. Read .profiling_cache.json directly (same data, for callers without a DB object).
-    3. Scan results/evaluations/<model>/ for any *.json with all-zeros mask.
+    1. Read the all-zero mask evaluation JSON (actual K=1 TensorRT profile).
+    2. Optionally profile the all-zero mask when it is missing.
+    3. In dry-run style contexts only, use the fixed reference values below.
+
+    dag_aligned_full chunk sums are intentionally not used here because they are
+    split-candidate metadata, not measured K=1 execution time.
     """
     metric_key = "per_chunk_gpu_p99_ms" if wcet_metric == "p99" else "per_chunk_gpu_mean_ms"
+    model_key = model_name.lower()
 
-    # 1. ProfilingDB object (preferred — already loaded in memory)
-    if profiling_db is not None:
-        try:
-            entry = profiling_db.get(model_name.lower(), "dag_aligned_full", precision)
-            if entry:
-                times = entry.get(metric_key) or entry.get("per_chunk_gpu_mean_ms")
-                if times:
-                    return float(sum(times))
-        except Exception:
-            pass
+    k1_value = _get_measured_k1_wcet_ms(model_key, precision, metric_key)
+    if k1_value is not None:
+        return k1_value
 
-    # 2. Read cache file directly
-    cache_path = REPO / "results" / "optimization" / ".profiling_cache.json"
-    if cache_path.exists():
-        try:
-            cache_data = json.loads(cache_path.read_text())
-            key = f"{model_name.lower()}|dag_aligned_full|{precision}"
-            entry = cache_data.get("entries", {}).get(key)
-            if entry:
-                times = entry.get(metric_key) or entry.get("per_chunk_gpu_mean_ms")
-                if times:
-                    return float(sum(times))
-        except Exception:
-            pass
+    if profile_missing_k1:
+        k1_value = _profile_missing_k1_wcet_ms(
+            model_key,
+            precision=precision,
+            wcet_metric=wcet_metric,
+            warmup=warmup,
+            iters=iters,
+        )
+        if k1_value is not None:
+            return k1_value
 
-    # 3. Scan evaluation JSON files for an all-zeros mask (actual K=1 profile)
-    eval_dir = REPO / "results" / "evaluations" / model_name.lower()
-    if eval_dir.exists():
-        for candidate in sorted(eval_dir.glob("*.json")):
-            try:
-                data = json.loads(candidate.read_text())
-                mask = data.get("mask", [])
-                if mask and sum(mask) == 0:
-                    times = data.get(metric_key) or data.get("per_chunk_gpu_mean_ms")
-                    if times:
-                        return float(sum(times))
-            except Exception:
-                continue
-
-    # 4. Dry-run fallback: use measured Jetson Orin reference values
-    key_lower = model_name.lower()
+    key_lower = model_key
     if key_lower in _DRY_RUN_BASE_WCET_MS:
         return _DRY_RUN_BASE_WCET_MS[key_lower]
 
     return None
+
+
+def _get_measured_k1_wcet_ms(
+    model_name: str,
+    precision: str,
+    metric_key: str,
+) -> Optional[float]:
+    n_base = _get_base_chunk_count(model_name)
+    if n_base is None or n_base <= 0:
+        return None
+    mask = [0] * (n_base - 1)
+    try:
+        from src.optimization.config_evaluator import mask_to_variant_name
+
+        variant_name = mask_to_variant_name(model_name, mask)
+        preferred = (
+            REPO
+            / "results"
+            / "evaluations"
+            / model_name
+            / f"{variant_name}_{precision}.json"
+        )
+        value = _read_k1_wcet_from_eval_json(preferred, mask, metric_key)
+        if value is not None:
+            return value
+    except Exception:
+        pass
+
+    eval_dir = REPO / "results" / "evaluations" / model_name
+    if eval_dir.exists():
+        for candidate in sorted(eval_dir.glob("*.json")):
+            value = _read_k1_wcet_from_eval_json(candidate, mask, metric_key)
+            if value is not None:
+                return value
+    return None
+
+
+def _read_k1_wcet_from_eval_json(
+    path: Path,
+    expected_mask: List[int],
+    metric_key: str,
+) -> Optional[float]:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    if data.get("error"):
+        return None
+    mask = data.get("mask")
+    if mask != expected_mask:
+        return None
+    times = data.get(metric_key) or data.get("per_chunk_gpu_mean_ms")
+    if times and len(times) == 1:
+        return float(sum(times))
+    return None
+
+
+def _profile_missing_k1_wcet_ms(
+    model_name: str,
+    precision: str,
+    wcet_metric: str,
+    warmup: int,
+    iters: int,
+) -> Optional[float]:
+    n_base = _get_base_chunk_count(model_name)
+    if n_base is None or n_base <= 0:
+        return None
+    mask = [0] * (n_base - 1)
+    try:
+        from src.optimization.config_evaluator import evaluate_mask
+
+        result = evaluate_mask(
+            model_name=model_name,
+            mask=mask,
+            precision=precision,
+            warmup=warmup,
+            iters=iters,
+            dry_run=False,
+        )
+    except Exception:
+        return None
+    if getattr(result, "error", None):
+        return None
+    times = (
+        getattr(result, "per_chunk_gpu_p99_ms", None)
+        if wcet_metric == "p99"
+        else getattr(result, "per_chunk_gpu_mean_ms", None)
+    )
+    if not times:
+        times = getattr(result, "per_chunk_gpu_mean_ms", None)
+    if times and len(times) == 1:
+        return float(sum(times))
+    return None
+
+
+def _get_base_chunk_count(model_name: str) -> Optional[int]:
+    cfg_path = REPO / "artifacts" / "split_configs" / model_name / "dag_aligned_full.json"
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text())
+            chunks = cfg.get("chunks", [])
+            if chunks:
+                return len(chunks)
+        except Exception:
+            pass
+    return _MODEL_N_CHUNKS.get(model_name)
 
 
 # ── Task generation ───────────────────────────────────────────────────────────
@@ -176,6 +265,13 @@ class WorkloadConfig:
     max_block_count: Optional[int] = None
     per_splitting_overhead: float = 0.0
     max_retries: int = 200
+    num_cpus_range: Optional[Tuple[int, int]] = None
+    tasks_per_cpu_range: Optional[Tuple[int, int]] = None
+    number_of_inference_segments_range: Optional[Tuple[int, int]] = None
+    max_block_count_range: Optional[Tuple[int, int]] = None
+    profile_missing_k1: bool = False
+    warmup: int = 20
+    iters: int = 200
 
 
 def generate_tasksets(
@@ -195,15 +291,16 @@ def generate_tasksets(
     base_wcets: Dict[str, float] = {}
     for model in config.models:
         wcet = _get_base_gpu_wcet_ms(
-            model, config.precision, config.wcet_metric, profiling_db
+            model,
+            config.precision,
+            config.wcet_metric,
+            profiling_db,
+            profile_missing_k1=config.profile_missing_k1,
+            warmup=config.warmup,
+            iters=config.iters,
         )
         if wcet is not None and wcet > 0:
             base_wcets[model] = wcet
-        else:
-            # Fallback: use estimated sum from profile JSON metadata
-            wcet = _estimate_base_wcet_from_metadata(model)
-            if wcet is not None:
-                base_wcets[model] = wcet
 
     if not base_wcets:
         raise RuntimeError(
@@ -400,33 +497,46 @@ def _generate_dnnsplitting_taskset(
     as a validity filter. This is the closest real-DNN analogue of the
     synthetic DNNSplitting generator.
     """
-    if config.num_cpus <= 0:
-        raise ValueError("num_cpus must be positive in dnnsplitting taskgen mode")
+    num_cpus_range = config.num_cpus_range or (config.num_cpus, config.num_cpus)
+    if num_cpus_range[0] <= 0 or num_cpus_range[1] < num_cpus_range[0]:
+        raise ValueError("num_cpus range must be positive in dnnsplitting taskgen mode")
+    if config.tasks_per_cpu_range is not None:
+        if config.tasks_per_cpu_range[0] <= 0 or config.tasks_per_cpu_range[1] < config.tasks_per_cpu_range[0]:
+            raise ValueError("tasks_per_cpu_range must be a positive increasing range")
     g_min, g_max = config.g_ratio_range
     if not (0.0 < g_min <= g_max <= 1.0):
         raise ValueError("g_ratio_range must satisfy 0.0 < min <= max <= 1.0")
     if config.tasks_per_cpu is not None and config.tasks_per_cpu <= 0:
         raise ValueError("tasks_per_cpu must be positive when set")
 
-    expected_tasks = (
-        config.tasks_per_cpu * config.num_cpus
-        if config.tasks_per_cpu is not None
-        else config.n_tasks
-    )
     rejection_reasons: Dict[str, int] = {}
 
     def reject(reason: str) -> None:
         rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
 
     for attempt in range(max_retries):
-        if config.tasks_per_cpu is not None:
-            cpu_task_counts = [config.tasks_per_cpu] * config.num_cpus
+        num_cpus = rng.randint(num_cpus_range[0], num_cpus_range[1])
+        n_inference_segments = _sample_int_range(
+            rng,
+            config.number_of_inference_segments_range,
+            config.number_of_inference_segments,
+        )
+        max_block_count = _sample_int_range(
+            rng,
+            config.max_block_count_range,
+            config.max_block_count,
+        )
+        if config.tasks_per_cpu_range is not None:
+            lo, hi = config.tasks_per_cpu_range
+            cpu_task_counts = [rng.randint(lo, hi) for _ in range(num_cpus)]
+        elif config.tasks_per_cpu is not None:
+            cpu_task_counts = [config.tasks_per_cpu] * num_cpus
         else:
-            cpu_task_counts = _distribute_task_count(config.n_tasks, config.num_cpus)
+            cpu_task_counts = _distribute_task_count(config.n_tasks, num_cpus)
         if config.uniform_cpu_utilization:
-            cpu_utils = [config.utilization / config.num_cpus] * config.num_cpus
+            cpu_utils = [config.utilization / num_cpus] * num_cpus
         else:
-            cpu_utils = uunifast(config.num_cpus, config.utilization, rng)
+            cpu_utils = uunifast(num_cpus, config.utilization, rng)
 
         tasks: List[dict] = []
         task_idx = 0
@@ -513,7 +623,7 @@ def _generate_dnnsplitting_taskset(
             if not valid:
                 break
 
-        if not valid or len(tasks) != expected_tasks:
+        if not valid or len(tasks) != sum(cpu_task_counts):
             continue
 
         tasks.sort(key=lambda t: t["deadline_ms"])
@@ -547,13 +657,30 @@ def _generate_dnnsplitting_taskset(
             "_seed": config.seed,
             "_taskset_idx": taskset_idx,
             "_utilization": config.utilization,
-            "_n_tasks": expected_tasks,
-            "_num_cpus": config.num_cpus,
+            "_n_tasks": len(tasks),
+            "_num_cpus": num_cpus,
             "_tasks_per_cpu": config.tasks_per_cpu,
+            "_cpu_task_counts": list(cpu_task_counts),
+            "_num_cpus_range": list(num_cpus_range),
+            "_tasks_per_cpu_range": (
+                list(config.tasks_per_cpu_range)
+                if config.tasks_per_cpu_range is not None
+                else None
+            ),
             "_g_ratio_range": [g_min, g_max],
             "_g_utilization_threshold": config.g_utilization_threshold,
-            "_number_of_inference_segments": config.number_of_inference_segments,
-            "_max_block_count": config.max_block_count,
+            "_number_of_inference_segments": n_inference_segments,
+            "_max_block_count": max_block_count,
+            "_number_of_inference_segments_range": (
+                list(config.number_of_inference_segments_range)
+                if config.number_of_inference_segments_range is not None
+                else None
+            ),
+            "_max_block_count_range": (
+                list(config.max_block_count_range)
+                if config.max_block_count_range is not None
+                else None
+            ),
             "_per_splitting_overhead": config.per_splitting_overhead,
             "_uniform_cpu_utilization": config.uniform_cpu_utilization,
             "_uniform_task_utilization": config.uniform_task_utilization,
@@ -614,6 +741,17 @@ def _split_cpu_budget(cpu_total: float, rng: random.Random) -> Tuple[float, floa
     cut = rng.random()
     cpu_pre = cpu_total * cut
     return cpu_pre, cpu_total - cpu_pre
+
+
+def _sample_int_range(
+    rng: random.Random,
+    range_value: Optional[Tuple[int, int]],
+    fallback: Optional[int],
+) -> Optional[int]:
+    if range_value is None:
+        return fallback
+    lo, hi = range_value
+    return rng.randint(int(lo), int(hi))
 
 
 def _estimate_base_wcet_from_metadata(model_name: str) -> Optional[float]:

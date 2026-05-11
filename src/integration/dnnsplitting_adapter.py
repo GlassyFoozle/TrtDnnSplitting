@@ -94,7 +94,12 @@ def dnn_task_to_seginftask(
     seg.base_block_list = list(base_times)
     seg.max_block_count = N
     seg.splitting_config = list(splitting_config)
-    seg.G_block_list = seg._compute_block_list()
+    current_times = list(getattr(dnn_task, "current_chunk_times_ms", []) or [])
+    expected_k = sum(splitting_config) + 1
+    if len(current_times) == expected_k:
+        seg.G_block_list = [float(t) for t in current_times]
+    else:
+        seg.G_block_list = seg._compute_block_list()
 
     # --- Build segment_list for SegInfTask ---
     # SegInfTask.__init__ also calls InferenceSegment(G_segment, max_block_count, ...).

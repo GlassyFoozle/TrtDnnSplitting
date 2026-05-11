@@ -309,6 +309,14 @@ def int_range_choice(data: Dict[str, Any], key: str, default: int) -> Tuple[int,
     return int(lo), ""
 
 
+def int_range(data: Dict[str, Any], key: str, default: int) -> Tuple[int, int]:
+    lo, hi = range_pair(data, key, (default, default))
+    lo_i, hi_i = int(lo), int(hi)
+    if lo_i <= 0 or hi_i < lo_i:
+        raise ValueError(f"{key} must be a positive increasing integer range")
+    return lo_i, hi_i
+
+
 def first_range_value(data: Dict[str, Any], key: str, default: float) -> Tuple[float, str]:
     lo, hi = range_pair(data, key, (default, default))
     if lo != hi:
@@ -348,24 +356,14 @@ def build_mapping(
     args: argparse.Namespace,
 ) -> Tuple[Dict[str, Any], List[str]]:
     notes: List[str] = []
-    num_cpus, note = int_range_choice(yaml_data, "number_of_cpu_range", 1)
-    if note:
-        notes.append(note)
-    tasks_per_cpu, note = int_range_choice(yaml_data, "number_of_tasks_per_cpu_range", 1)
-    if note:
-        notes.append(note)
+    num_cpus_range = int_range(yaml_data, "number_of_cpu_range", 1)
+    tasks_per_cpu_range = int_range(yaml_data, "number_of_tasks_per_cpu_range", 1)
     g_min, g_max = range_pair(yaml_data, "G_ratio_range", (0.6, 1.0))
     g_threshold, note = first_range_value(yaml_data, "G_utilization_threshold_range", 1.0)
     if note:
         notes.append(note)
-    n_inference_segments, note = int_range_choice(
-        yaml_data, "number_of_inference_segments_range", 1
-    )
-    if note:
-        notes.append(note)
-    max_block_count, note = int_range_choice(yaml_data, "max_block_count_range", 20)
-    if note:
-        notes.append(note)
+    n_inference_segments_range = int_range(yaml_data, "number_of_inference_segments_range", 1)
+    max_block_count_range = int_range(yaml_data, "max_block_count_range", 20)
     period_lo, period_hi = range_pair(yaml_data, "period_range", (1.0, 10000.0))
     n_tasksets = int(args.num_tasksets_override or yaml_data.get("n_task_sets", 1))
     utilizations = utilization_list(yaml_data, args.utilizations)
@@ -384,10 +382,21 @@ def build_mapping(
             "period_range is applied as a validity filter after real-DNN period derivation."
         )
 
+    notes.append(
+        "integer YAML ranges are sampled per generated taskset/CPU, matching "
+        "DNNSplitting generate_task_set.py semantics."
+    )
+
     mapping = {
-        "num_cpus": num_cpus,
-        "num_tasks_per_cpu": tasks_per_cpu,
-        "num_tasks": num_cpus * tasks_per_cpu,
+        "num_cpus": num_cpus_range[0],
+        "num_cpus_range": list(num_cpus_range),
+        "num_tasks_per_cpu": tasks_per_cpu_range[0],
+        "num_tasks_per_cpu_range": list(tasks_per_cpu_range),
+        "num_tasks": num_cpus_range[1] * tasks_per_cpu_range[1],
+        "num_tasks_range": [
+            num_cpus_range[0] * tasks_per_cpu_range[0],
+            num_cpus_range[1] * tasks_per_cpu_range[1],
+        ],
         "utilizations": utilizations,
         "num_tasksets_per_utilization": n_tasksets,
         "g_ratio_min": g_min,
@@ -395,8 +404,10 @@ def build_mapping(
         "uniform_cpu_utilization": bool(yaml_data.get("uniform_cpu_utilization", True)),
         "uniform_task_utilization": bool(yaml_data.get("uniform_task_utilization", False)),
         "g_utilization_threshold": g_threshold,
-        "number_of_inference_segments": n_inference_segments,
-        "max_block_count": max_block_count,
+        "number_of_inference_segments": n_inference_segments_range[0],
+        "number_of_inference_segments_range": list(n_inference_segments_range),
+        "max_block_count": max_block_count_range[0],
+        "max_block_count_range": list(max_block_count_range),
         "per_splitting_overhead": float(yaml_data.get("per_splitting_overhead", 0.0)),
         "yaml_period_range": [period_lo, period_hi],
         "ignore_period_range": bool(args.ignore_period_range),
@@ -440,6 +451,15 @@ def generate_yaml_tasksets(
             max_block_count=int(mapping["max_block_count"]),
             per_splitting_overhead=float(mapping["per_splitting_overhead"]),
             max_retries=500,
+            num_cpus_range=tuple(int(v) for v in mapping["num_cpus_range"]),
+            tasks_per_cpu_range=tuple(int(v) for v in mapping["num_tasks_per_cpu_range"]),
+            number_of_inference_segments_range=tuple(
+                int(v) for v in mapping["number_of_inference_segments_range"]
+            ),
+            max_block_count_range=tuple(int(v) for v in mapping["max_block_count_range"]),
+            profile_missing_k1=bool(args.live),
+            warmup=int(args.warmup),
+            iters=int(args.iters),
         )
         paths = generate_tasksets(cfg, output_dir=util_dir)
         for path in paths:

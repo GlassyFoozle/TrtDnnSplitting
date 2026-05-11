@@ -221,82 +221,41 @@ class SegInfTask:
             if source[0] == "G":
                 original_segment_count = max(original_segment_count, source[1] + 1)
 
-        max_c_idx = max(
-            (source[1] for source in block_sources if source[0] == "C"),
-            default=0,
-        )
-        c_list = [0] * max(original_segment_count + 1, max_c_idx + 1)
-        g_base_blocks_by_segment = [[] for _ in range(original_segment_count)]
-        g_measured_blocks_by_segment = [[] for _ in range(original_segment_count)]
+        c_list = [0] * (original_segment_count + 1)
+        g_blocks_by_segment = [[] for _ in range(original_segment_count)]
         uni_pos_by_g_block = {}
-        source_value = {}
         for pos, (value, source) in enumerate(zip(uni_segment.base_block_list, block_sources)):
-            source_value[source] = value
             if source[0] == "C":
                 c_list[source[1]] += value
             else:
                 seg_idx = source[1]
                 block_idx = source[2]
-                g_base_blocks_by_segment[seg_idx].append(value)
+                g_blocks_by_segment[seg_idx].append(value)
                 uni_pos_by_g_block[(seg_idx, block_idx)] = pos
 
-        source_groups = []
-        current_group = [block_sources[0]]
-        for boundary_idx, split in enumerate(uni_segment.splitting_config):
-            if split == 1:
-                source_groups.append(current_group)
-                current_group = [block_sources[boundary_idx + 1]]
-            else:
-                current_group.append(block_sources[boundary_idx + 1])
-        source_groups.append(current_group)
-
-        if len(source_groups) == len(uni_segment.G_block_list):
-            c_list = [0] * max(original_segment_count + 1, max_c_idx + 1)
-            for group_value, group_sources in zip(uni_segment.G_block_list, source_groups):
-                source_types = {source[0] for source in group_sources}
-                if source_types == {"C"}:
-                    if len(group_sources) == 1:
-                        c_list[group_sources[0][1]] += group_value
-                    else:
-                        for source in group_sources:
-                            c_list[source[1]] += source_value[source]
-                elif source_types == {"G"}:
-                    seg_indices = {source[1] for source in group_sources}
-                    if len(seg_indices) == 1:
-                        seg_idx = next(iter(seg_indices))
-                        g_measured_blocks_by_segment[seg_idx].append(group_value)
-                else:
-                    for source in group_sources:
-                        if source[0] == "C":
-                            c_list[source[1]] += source_value[source]
-
         restored_segments = []
-        for seg_idx, base_blocks in enumerate(g_base_blocks_by_segment):
-            if not base_blocks:
+        for seg_idx, blocks in enumerate(g_blocks_by_segment):
+            if not blocks:
                 return False
 
-            measured_blocks = g_measured_blocks_by_segment[seg_idx]
-            positive_total = max(sum(base_blocks), len(base_blocks))
+            positive_total = max(sum(blocks), len(blocks))
             segment = InferenceSegment(
                 positive_total,
-                len(base_blocks),
+                len(blocks),
                 uni_segment.per_splitting_overhead,
             )
-            segment.base_block_list = list(base_blocks)
-            segment.max_block_count = len(base_blocks)
+            segment.base_block_list = list(blocks)
+            segment.max_block_count = len(blocks)
             segment.fixed_one_indices = set()
             segment.no_overhead_split_indices = set()
-            segment.splitting_config = [0] * (len(base_blocks) - 1)
-            for block_idx in range(len(base_blocks) - 1):
+            segment.splitting_config = [0] * (len(blocks) - 1)
+            for block_idx in range(len(blocks) - 1):
                 left_pos = uni_pos_by_g_block[(seg_idx, block_idx)]
                 right_pos = uni_pos_by_g_block[(seg_idx, block_idx + 1)]
                 if right_pos == left_pos + 1:
                     segment.splitting_config[block_idx] = uni_segment.splitting_config[left_pos]
-            segment.G_segment = sum(base_blocks)
-            if measured_blocks:
-                segment.G_block_list = list(measured_blocks)
-            else:
-                segment.G_block_list = segment._compute_block_list()
+            segment.G_segment = sum(blocks)
+            segment.G_block_list = segment._compute_block_list()
             restored_segments.append(segment)
 
         self.C_list = c_list
@@ -364,59 +323,6 @@ class SegInfTask:
             else:
                 base_config.append(0)
 
-        measured_blocks_by_segment = [
-            list(getattr(segment, "G_block_list", [])) for segment in segments
-        ]
-        source_groups = []
-        if base_blocks:
-            current_group = [block_sources[0]]
-            for boundary_idx, split in enumerate(base_config):
-                if split == 1:
-                    source_groups.append(current_group)
-                    current_group = [block_sources[boundary_idx + 1]]
-                else:
-                    current_group.append(block_sources[boundary_idx + 1])
-            source_groups.append(current_group)
-
-        measured_uni_blocks = []
-        measured_group_idx_by_segment = [0] * len(segments)
-        for group in source_groups:
-            source_types = {source[0] for source in group}
-            if source_types == {"C"}:
-                measured_uni_blocks.append(
-                    sum(source_value for source_value, source in zip(base_blocks, block_sources) if source in group)
-                )
-                continue
-            if source_types == {"G"}:
-                seg_indices = {source[1] for source in group}
-                if len(seg_indices) == 1:
-                    seg_idx = next(iter(seg_indices))
-                    measured_idx = measured_group_idx_by_segment[seg_idx]
-                    measured_blocks = (
-                        measured_blocks_by_segment[seg_idx]
-                        if seg_idx < len(measured_blocks_by_segment)
-                        else []
-                    )
-                    if measured_idx < len(measured_blocks):
-                        measured_uni_blocks.append(measured_blocks[measured_idx])
-                    else:
-                        measured_uni_blocks.append(
-                            sum(
-                                base_blocks[pos]
-                                for pos, source in enumerate(block_sources)
-                                if source in group
-                            )
-                        )
-                    measured_group_idx_by_segment[seg_idx] += 1
-                    continue
-            measured_uni_blocks.append(
-                sum(
-                    base_blocks[pos]
-                    for pos, source in enumerate(block_sources)
-                    if source in group
-                )
-            )
-
         positive_total = max(sum(base_blocks), len(base_blocks))
         merged_segment = InferenceSegment(
             positive_total,
@@ -429,10 +335,7 @@ class SegInfTask:
         merged_segment.no_overhead_split_indices = set(no_overhead_split_indices)
         merged_segment.splitting_config = list(base_config)
         merged_segment.G_segment = sum(base_blocks)
-        merged_segment.G_block_list = (
-            measured_uni_blocks if len(measured_uni_blocks) == len(source_groups)
-            else merged_segment._compute_block_list()
-        )
+        merged_segment.G_block_list = merged_segment._compute_block_list()
 
         self.C_list = [0, 0]
         self.inference_segment_list = [merged_segment]

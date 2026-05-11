@@ -12,9 +12,9 @@ SS model:
   tol      — tolerance-fit splitting (follows DNNSplitting RTA_SS_tol)
   tol-fb   — tolerance-fit with fallback (follows RTA_SS_tol_fb)
   heu      — paper-style greedy: add one boundary at a time, pick best each round
-  heu-k    — K-balanced greedy: increment K per lower task (original approximation)
+  heu-k    — measured K-search greedy: increment K per lower task
   opt      — paper-style BFS-OPT: enumerate enabled-boundary subsets, min WCET
-  opt-k    — K-balanced OPT: sweep K=1..N balanced masks (original approximation)
+  opt-k    — measured K-search OPT: sweep K=1..N measured K masks
 
 UNI model:
   single   — no-split baseline, UNI RTA
@@ -29,8 +29,8 @@ Key hook: wherever the original DNNSplitting algorithm calls
 we call instead:
   _dnn_apply_k_split(dnn_task, seg_task, seg_idx, K, ...)
 which:
-  1. computes balanced K-chunk mask via balanced_splitter
-  2. calls evaluate_mask() (cache-first)
+  1. enumerates every policy-allowed mask with exactly K chunks
+  2. calls evaluate_mask() for each candidate (cache-first)
   3. patches seg.G_block_list with MEASURED per-chunk p99 times
   4. returns MaskApplicationResult + updates profiling stats
 
@@ -52,17 +52,17 @@ are defined per model in configs/split_point_policies.json:
   "stage"      — only at major architectural transitions (MaxPool + FC)
   "five_points" / "ten_points" — bounded design-phase search policies
 
-Paper-style vs K-balanced algorithms
+Paper-style vs measured K-search algorithms
 --------------------------------------
 opt / heu (paper-style):
   Enumerate actual boundary-subset configs via BFS or greedy probing.
   Each profile_count += 1 = one evaluate_and_apply_mask call.
   Respects split-point policy (only enabled boundaries can be active).
 
-opt-k / heu-k (K-balanced, original approximation):
-  Use balanced DP partition to generate the K-optimal mask for each K.
-  Sweeps K=1..N (opt-k) or greedily increments K (heu-k).
-  Does not enumerate all possible boundary placements for a given K.
+opt-k / heu-k (measured K-search):
+  For each requested K, enumerate all enabled boundary subsets with K-1 active
+  boundaries, profile/cache each candidate, and choose the measured mask with
+  the lowest max chunk time (tie: spread, then total GPU time).
 
 UNI implementation note
 -----------------------
@@ -72,9 +72,9 @@ GPU boundaries in UNI space (positions 1..N-1) map directly to TRT boundaries
 (TRT_boundary[k] = UNI_boundary[k+1] for k in 0..N-2).
 
 For UNI algorithms that need splitting: extract TRT mask from UNI config,
-call evaluate_mask, reconstruct UNI G_block_list as [cpu_pre+g_0, g_1..g_K-2, g_K-1+cpu_post].
+call evaluate_mask, reconstruct UNI G_block_list as [cpu_pre?, g_0..g_K-1, cpu_post?].
 
-For UNI-single and UNI-max: no TRT evaluation (use estimated base block sums).
+UNI-single and UNI-max also use measured evaluator/cache timing before RTA.
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ _analysis_module.ceil_div_with_context = _ceil_div_int
 @dataclass
 class ProfilingStats:
     masks_evaluated: int = 0
-    baseline_k1_hits: int = 0        # K=1 no-split baseline evaluations (never TRT)
+    baseline_k1_hits: int = 0        # Legacy counter; measured K=1 uses cache/real counters.
     cache_hits: int = 0
     real_profiles: int = 0
     builds_triggered: int = 0
@@ -163,7 +163,7 @@ class ProfilingStats:
     def update(self, result: MaskApplicationResult) -> None:
         self.masks_evaluated += 1
         if result.is_k1_baseline:
-            # K=1 baseline uses pre-profiled dag_aligned_full; no TRT pipeline
+            # Legacy path retained for old callers; normal K=1 is measured.
             self.baseline_k1_hits += 1
             return
 
@@ -404,7 +404,7 @@ def run_dnn_rta_algorithm(
     force_profile: bool = False,
     dry_run: bool = False,
     max_iterations: int = 1000,
-    exact_opt_max_boundaries: int = 0,  # 0 = always use balanced approximation (opt-k only)
+    exact_opt_max_boundaries: int = 0,  # retained for CLI compatibility
     warmup: int = 20,
     iters: int = 200,
     policy_name: str = "all",           # split-point policy: "all","paper_like","stage","five_points","ten_points"
@@ -462,13 +462,6 @@ def run_dnn_rta_algorithm(
                 break
 
     try:
-        overload = _detect_rta_overload(sorted_list, model.lower())
-        if overload is not None:
-            reason, message = overload
-            _mark_clean_unschedulable(result, reason, message, sorted_list, task_map)
-            result.duration_s = time.time() - t0
-            return result
-
         if model.lower() == "ss":
             _dispatch_ss(
                 algorithm=algorithm,
@@ -716,6 +709,22 @@ def _paper_no_split_gate_ss(sorted_task_list, task_map, result, eval_kwargs) -> 
     return False
 
 
+def _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs) -> bool:
+    """Apply measured K=1 timing to every task before RTA consumes G values."""
+    if getattr(result, "_measured_no_split_initialized", False):
+        return True
+    for st in sorted_task_list:
+        dt, _ = task_map[str(st.id)]
+        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
+        result.stats.update(r)
+        if not r.success:
+            result.error = r.error or f"K=1 measured timing failed for task {st.id}"
+            result.schedulable = False
+            return False
+    result._measured_no_split_initialized = True
+    return True
+
+
 def _paper_no_split_gate_uni(sorted_task_list, task_map, result, eval_kwargs) -> bool:
     """
     Baseline gate for paper-style UNI OPT/HEU.
@@ -741,10 +750,8 @@ def _paper_no_split_gate_uni(sorted_task_list, task_map, result, eval_kwargs) ->
 
 def _run_ss_single(sorted_task_list, task_map, result, eval_kwargs):
     """Apply K=1 mask to all tasks, run SS RTA."""
-    for st in sorted_task_list:
-        dt, _ = task_map[str(st.id)]
-        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
-        result.stats.update(r)
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
 
     R_list = []
     schedulable = True
@@ -768,6 +775,10 @@ def _run_ss_max(sorted_task_list, task_map, result, eval_kwargs):
         dt, _ = task_map[str(st.id)]
         r = apply_full_split_mask(dt, st, 0, **eval_kwargs)
         result.stats.update(r)
+        if not r.success:
+            result.error = r.error or f"full-split measured timing failed for task {st.id}"
+            result.schedulable = False
+            return
 
     R_list = []
     schedulable = True
@@ -790,18 +801,21 @@ def _run_ss_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations,
     """
     DNN-aware SS-tol.
 
-    Uses policy-aware balanced splitting. It still operates in K-space, but
-    disabled policy boundaries are forced to 0.
+    Uses measured K-search. It still operates in K-space, but disabled policy
+    boundaries are forced to 0.
 
     Follows DNNSplitting RTA_SS_tol logic:
     For each task in priority order:
       1. Compute SS RTA + tolerance
       2. If schedulable, continue
       3. If not, find lower-priority task whose max_G_block exceeds tolerance
-         and split it to K+1 using balanced mask
+         and split it to K+1 using measured-best K mask
       4. Re-evaluate RTA
       5. If all lower tasks meet tolerance → done; else → not schedulable
     """
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
+
     n = len(sorted_task_list)
     R_list = []
     tolerance_list = [math.inf] * n
@@ -846,7 +860,8 @@ def _run_ss_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations,
             if cur_n >= _policy_max_chunks(dt, st.inference_segment_list[s_idx], policy_name):
                 break
             app_r = apply_k_chunks(
-                dt, st, s_idx, cur_n + 1, policy_name=policy_name, **eval_kwargs
+                dt, st, s_idx, cur_n + 1, policy_name=policy_name,
+                search_stats=result.stats, **eval_kwargs
             )
             result.stats.update(app_r)
             if not app_r.success:
@@ -884,21 +899,14 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
     """
     DNN-aware SS-tol-fb.
 
-    Uses policy-aware balanced splitting. It still operates in K-space, but
-    disabled policy boundaries are forced to 0.
+    Uses measured K-search. It still operates in K-space, but disabled policy
+    boundaries are forced to 0.
 
     Follows DNNSplitting _RTA_SS_tol_fb_impl logic with DNN-aware split hook.
     Fallback: split the task with the largest max_G_block (excluding highest-priority).
     """
-    # K=1 initialization: ensure all tasks start from the no-split (all-zero mask)
-    # state before the search loop. In live mode this is cache-first (real K=1
-    # profiling only if not already cached); in dry-run it uses dag_aligned_full
-    # estimates with no GPU profiles triggered.  Consistent with what ss:opt does
-    # via its no-split gate (_run_ss_single).
-    for st in sorted_task_list:
-        dt, _ = task_map[str(st.id)]
-        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
-        result.stats.update(r)
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
 
     n = len(sorted_task_list)
     R_list = []
@@ -949,7 +957,7 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
                 break
             app_r = apply_k_chunks(
                 dt, st_target, s_idx, cur_n + 1,
-                policy_name=policy_name, **eval_kwargs
+                policy_name=policy_name, search_stats=result.stats, **eval_kwargs
             )
             iterations += 1
             result.stats.update(app_r)
@@ -967,7 +975,8 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
 
         # Step 3: fallback — split largest max_G_block (excluding task 0)
         splitted, splitted_idx, app_r = _dnn_split_largest_excluding_highest(
-            sorted_task_list, task_map, eval_kwargs, policy_name=policy_name
+            sorted_task_list, task_map, eval_kwargs, policy_name=policy_name,
+            search_stats=result.stats,
         )
         if app_r is not None:
             result.stats.update(app_r)
@@ -1004,24 +1013,27 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
     result.algorithm_iterations = iterations
 
 
-# ── SS: heu-k (K-balanced greedy, original approximation) ────────────────────
+# ── SS: heu-k (measured K-search greedy) ─────────────────────────────────────
 
 def _run_ss_heu_k(sorted_task_list, task_map, result, eval_kwargs, max_iterations,
                   policy_name="all"):
     """
-    DNN-aware SS-heu-k (original K-balanced greedy approximation).
+    DNN-aware SS-heu-k (measured K-search greedy).
 
-    Uses policy-aware balanced splitting. It still operates in K-space, but
-    disabled policy boundaries are forced to 0.
+    Uses measured K-search. It still operates in K-space, but disabled policy
+    boundaries are forced to 0.
 
     For each task in priority order:
       Compute SS RTA + tolerance.
       While lower-priority task has max_G_block > tolerance:
-        Increment its K by 1 using balanced split.
+        Increment its K by 1 using measured-best K split.
         Re-evaluate tolerance.
     This is a greedy per-task heuristic without full re-analysis from scratch.
-    (Original approximation; use 'heu' for paper-style boundary-subset greedy.)
+    Use 'heu' for paper-style boundary-subset greedy.
     """
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
+
     n = len(sorted_task_list)
     R_list = []
     tolerance_list = [math.inf] * n
@@ -1066,7 +1078,7 @@ def _run_ss_heu_k(sorted_task_list, task_map, result, eval_kwargs, max_iteration
                     dt_j, st_j = task_map[str(task_j.id)]
                     app_r = apply_k_chunks(
                         dt_j, st_j, s_idx, seg.size + 1,
-                        policy_name=policy_name, **eval_kwargs
+                        policy_name=policy_name, search_stats=result.stats, **eval_kwargs
                     )
                     iterations += 1
                     result.stats.update(app_r)
@@ -1086,17 +1098,18 @@ def _run_ss_heu_k(sorted_task_list, task_map, result, eval_kwargs, max_iteration
     result.algorithm_iterations = iterations
 
 
-# ── SS: opt-k (K-balanced OPT, original approximation) ───────────────────────
+# ── SS: opt-k (measured K-search OPT) ────────────────────────────────────────
 
 def _run_ss_opt_k(sorted_task_list, task_map, result, eval_kwargs,
                   exact_opt_max_boundaries, policy_name="all"):
     """
-    DNN-aware SS-opt-k (original K-balanced OPT approximation).
+    DNN-aware SS-opt-k (measured K-search OPT).
 
-    Uses policy-aware balanced splitting for the K-sweep. It still operates in
-    K-space, but disabled policy boundaries are forced to 0.
+    Uses measured K-search for the K-sweep. It still operates in K-space, but
+    disabled policy boundaries are forced to 0.
 
-    Enumerate K = 1, 2, ..., N for each lower-priority task using balanced masks.
+    Enumerate K = 1, 2, ..., N for each lower-priority task using measured-best
+    K masks.
     For each task, select the minimum K (minimum max_G_block) that satisfies the
     current tolerance.
 
@@ -1105,8 +1118,11 @@ def _run_ss_opt_k(sorted_task_list, task_map, result, eval_kwargs,
 
     If exact_opt_max_boundaries > 0 and boundary_count <= exact_opt_max_boundaries,
     enumerate all 2^(N-1) masks instead.
-    (Original approximation; use 'opt' for paper-style boundary-subset BFS-OPT.)
+    Use 'opt' for paper-style boundary-subset BFS-OPT.
     """
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
+
     n = len(sorted_task_list)
     R_list = []
     tolerance_list = []
@@ -1141,10 +1157,15 @@ def _run_ss_opt_k(sorted_task_list, task_map, result, eval_kwargs,
                 saved_state = _snapshot_segment_state(st_j, s_idx)
                 full_r = apply_k_chunks(
                     dt_j, st_j, s_idx, seg.max_block_count,
-                    policy_name=policy_name, **eval_kwargs
+                    policy_name=policy_name, search_stats=result.stats, **eval_kwargs
                 )
                 iterations += 1
                 result.stats.update(full_r)
+                if not full_r.success:
+                    schedulable = False
+                    result.error = full_r.error or "full-split measured timing failed"
+                    _restore_segment_state(st_j, s_idx, saved_state)
+                    break
                 if seg.G_block_list and max(seg.G_block_list) > cur_tol:
                     # Even full split can't meet tolerance for this task
                     schedulable = False
@@ -1195,11 +1216,11 @@ def _run_ss_opt_k(sorted_task_list, task_map, result, eval_kwargs,
                     if best_k is None:
                         schedulable = False
                 else:
-                    # Sweep K = 1 .. N_j using balanced masks
+                    # Sweep K = 1 .. N_j using measured-best K masks
                     for k in range(1, max_policy_k + 1):
                         app_r = apply_k_chunks(
                             dt_j, st_j, s_idx, k,
-                            policy_name=policy_name, **eval_kwargs
+                            policy_name=policy_name, search_stats=result.stats, **eval_kwargs
                         )
                         iterations += 1
                         result.stats.update(app_r)
@@ -1249,6 +1270,9 @@ def _run_ss_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
     from src.integration.split_point_policy import get_enabled_boundaries, apply_policy_to_mask
     from src.integration.paper_style_search import search_heuristic_ss_mask
 
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
+
     n = len(sorted_task_list)
     R_list = []
     tolerance_list = []
@@ -1287,6 +1311,17 @@ def _run_ss_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
         full_r = evaluate_and_apply_mask(dt_i, st_i, policy_full_mask, 0, **eval_kwargs)
         result.stats.update(full_r)
         iterations += 1
+        if not full_r.success:
+            schedulable = False
+            result.error = full_r.error or "full-split measured timing failed"
+            _restore_segment_state(st_i, 0, probe_snapshot)
+            (
+                dt_i.current_chunk_times_ms,
+                dt_i.selected_variant_name,
+                dt_i.selected_config_path,
+                dt_i.profile_result_path,
+            ) = dnn_probe_snapshot
+            break
         full_split_max_block = st_i.max_G_block
         _restore_segment_state(st_i, 0, probe_snapshot)
         (
@@ -1344,6 +1379,9 @@ def _run_ss_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
     from src.integration.split_point_policy import get_enabled_boundaries, apply_policy_to_mask
     from src.integration.paper_style_search import search_optimal_ss_mask
 
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
+
     n = len(sorted_task_list)
     R_list = []
     tolerance_list = []
@@ -1382,6 +1420,17 @@ def _run_ss_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
         full_r = evaluate_and_apply_mask(dt_i, st_i, policy_full_mask, 0, **eval_kwargs)
         result.stats.update(full_r)
         iterations += 1
+        if not full_r.success:
+            schedulable = False
+            result.error = full_r.error or "full-split measured timing failed"
+            _restore_segment_state(st_i, 0, probe_snapshot)
+            (
+                dt_i.current_chunk_times_ms,
+                dt_i.selected_variant_name,
+                dt_i.selected_config_path,
+                dt_i.profile_result_path,
+            ) = dnn_probe_snapshot
+            break
         full_split_max_block = st_i.max_G_block
         _restore_segment_state(st_i, 0, probe_snapshot)
         (
@@ -1427,13 +1476,10 @@ def _run_uni_single(sorted_task_list, task_map, result, eval_kwargs):
     Convert SS→UNI, apply no-split in UNI space, run UNI RTA.
 
     No-split in UNI space: only the fixed CPU-GPU boundaries are active.
-    K=1 apply ensures consistent baseline_k1_hits accounting vs _run_ss_single.
+    K=1 uses the same measured evaluator/cache path as _run_ss_single.
     """
-    # K=1 initialization: consistent with _run_ss_single accounting
-    for st in sorted_task_list:
-        dt, _ = task_map[str(st.id)]
-        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
-        result.stats.update(r)
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
 
     uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
 
@@ -1461,13 +1507,18 @@ def _run_uni_single(sorted_task_list, task_map, result, eval_kwargs):
 
 def _run_uni_max(sorted_task_list, task_map, result, eval_kwargs):
     """
-    Convert SS→UNI, apply max-split in UNI space (all non-fixed boundaries), run UNI RTA.
-
-    No TRT evaluation (use base block sum estimates for GPU portions).
+    Apply measured K=N timing, convert SS→UNI, run UNI RTA.
     """
+    for st in sorted_task_list:
+        dt, _ = task_map[str(st.id)]
+        r = apply_full_split_mask(dt, st, 0, **eval_kwargs)
+        result.stats.update(r)
+        if not r.success:
+            result.error = r.error or f"full-split measured timing failed for task {st.id}"
+            result.schedulable = False
+            return
+
     uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
-    for ut in uni_tasks:
-        ut.split_all_segments()
 
     schedulable = True
     for i, ut in enumerate(uni_tasks):
@@ -1490,8 +1541,8 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
     """
     DNN-aware UNI-tol-fb.
 
-    Uses policy-aware balanced splitting. It still operates in K-space, but
-    disabled policy boundaries are forced to 0.
+    Uses measured K-search. It still operates in K-space, but disabled policy
+    boundaries are forced to 0.
 
     Convert SS→UNI. When the algorithm needs to split in UNI space at GPU
     boundaries: extract TRT mask, call evaluate_mask, reconstruct UNI G_block_list.
@@ -1501,16 +1552,11 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
       Fixed boundaries (from fixed_one_indices) surround the GPU block.
       UNI GPU boundary k (1-indexed within GPU block) = TRT boundary k-1.
 
-    After TRT evaluation with K-chunk mask:
-      UNI G_block_list[0]   = cpu_pre + measured_gpu_chunk[0]
-      UNI G_block_list[1..K-2] = measured_gpu_chunk[1..K-2]
-      UNI G_block_list[K-1] = measured_gpu_chunk[K-1] + cpu_post
+    After TRT evaluation with K-chunk mask, keep the simulation UNI structure:
+      UNI G_block_list = [cpu_pre?, measured_gpu_chunk[0..K-1], cpu_post?]
     """
-    # K=1 initialization: consistent with _run_ss_tol_fb; G=0 fix in task.py makes this safe
-    for st in sorted_task_list:
-        dt, _ = task_map[str(st.id)]
-        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
-        result.stats.update(r)
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
 
     # Build UNI task list
     # We keep SS task list in parallel for TRT operations
@@ -1574,7 +1620,7 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
             new_k = cur_n + 1
             app_r = _uni_apply_k_chunks(
                 dt, st_orig, ut_target, s_idx, new_k, eval_kwargs,
-                policy_name=policy_name,
+                policy_name=policy_name, search_stats=result.stats,
             )
             iterations += 1
             result.stats.update(app_r)
@@ -1594,7 +1640,7 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
         ss_tasks_fb = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
         splitted, splitted_idx, app_r = _dnn_uni_split_largest_excluding_highest(
             uni_tasks, ss_tasks_fb, sorted_task_list, task_map, eval_kwargs,
-            policy_name=policy_name
+            policy_name=policy_name, search_stats=result.stats,
         )
         if app_r is not None:
             result.stats.update(app_r)
@@ -1636,8 +1682,8 @@ def _run_uni_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations
     """
     DNN-aware UNI-tol (no fallback).
 
-    Uses policy-aware balanced splitting. It still operates in K-space, but
-    disabled policy boundaries are forced to 0.
+    Uses measured K-search. It still operates in K-space, but disabled policy
+    boundaries are forced to 0.
 
     Converts SS→UNI at start. When splitting is needed:
       finds lower task via SS-compatible split_target, applies UNI split.
@@ -1645,11 +1691,8 @@ def _run_uni_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations
     Follows SS-tol logic but using UNI RTA functions (get_UNI_R_and_K,
     get_UNI_tolerance, update_UNI_R_list_and_tolerance_list).
     """
-    # K=1 initialization: consistent with _run_ss_tol
-    for st in sorted_task_list:
-        dt, _ = task_map[str(st.id)]
-        r = apply_no_split_mask(dt, st, 0, **eval_kwargs)
-        result.stats.update(r)
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
 
     from copy import deepcopy
     uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
@@ -1703,7 +1746,7 @@ def _run_uni_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations
             new_k = cur_n + 1
             app_r = _uni_apply_k_chunks(
                 dt, st_orig, ut_target, s_idx, new_k, eval_kwargs,
-                policy_name=policy_name,
+                policy_name=policy_name, search_stats=result.stats,
             )
             iterations += 1
             result.stats.update(app_r)
@@ -1751,6 +1794,9 @@ def _run_uni_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
     from src.integration.split_point_policy import get_enabled_boundaries
     from src.integration.paper_style_search import search_heuristic_uni_mask
 
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
+
     uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
 
     n = len(uni_tasks)
@@ -1769,20 +1815,23 @@ def _run_uni_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
         ut = uni_tasks[i]
         dt_i, st_orig_i = task_map[str(sorted_task_list[i].id)]
         cur_tol = min(tolerance_list)
+        seg_orig = st_orig_i.inference_segment_list[0]
+        N_gpu = len(seg_orig.base_block_list)
+        enabled = get_enabled_boundaries(dt_i.model_name, policy_name, N_gpu - 1)
 
-        # Full-split probe (profiling_count += 1 in paper)
-        ut_full = deepcopy(ut)
-        ut_full.split_all_segments()
+        # Full-split probe with measured TRT timing.
+        ok_full, ut_full, full_r = _measured_full_split_uni_probe(
+            dt_i, st_orig_i, eval_kwargs, enabled_boundaries=enabled
+        )
+        result.stats.update(full_r)
         iterations += 1
+        if not ok_full:
+            schedulable = False
+            break
 
         if ut_full.max_G_block > cur_tol:
             schedulable = False
             break
-
-        # Get enabled TRT boundaries for this model
-        seg_orig = st_orig_i.inference_segment_list[0]
-        N_gpu = len(seg_orig.base_block_list)
-        enabled = get_enabled_boundaries(dt_i.model_name, policy_name, N_gpu - 1)
 
         search_result = search_heuristic_uni_mask(
             dt_i, st_orig_i, ut, 0, cur_tol, enabled, eval_kwargs, result.stats,
@@ -1830,6 +1879,9 @@ def _run_uni_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
     from src.integration.split_point_policy import get_enabled_boundaries
     from src.integration.paper_style_search import search_optimal_uni_mask
 
+    if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
+        return
+
     uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
 
     n = len(uni_tasks)
@@ -1848,20 +1900,23 @@ def _run_uni_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
         ut = uni_tasks[i]
         dt_i, st_orig_i = task_map[str(sorted_task_list[i].id)]
         cur_tol = min(tolerance_list)
+        seg_orig = st_orig_i.inference_segment_list[0]
+        N_gpu = len(seg_orig.base_block_list)
+        enabled = get_enabled_boundaries(dt_i.model_name, policy_name, N_gpu - 1)
 
-        # Full-split probe
-        ut_full = deepcopy(ut)
-        ut_full.split_all_segments()
+        # Full-split probe with measured TRT timing.
+        ok_full, ut_full, full_r = _measured_full_split_uni_probe(
+            dt_i, st_orig_i, eval_kwargs, enabled_boundaries=enabled
+        )
+        result.stats.update(full_r)
         iterations += 1
+        if not ok_full:
+            schedulable = False
+            break
 
         if ut_full.max_G_block > cur_tol:
             schedulable = False
             break
-
-        # Get enabled TRT boundaries
-        seg_orig = st_orig_i.inference_segment_list[0]
-        N_gpu = len(seg_orig.base_block_list)
-        enabled = get_enabled_boundaries(dt_i.model_name, policy_name, N_gpu - 1)
 
         search_result = search_optimal_uni_mask(
             dt_i, st_orig_i, ut, 0, cur_tol, enabled, eval_kwargs, result.stats,
@@ -1909,13 +1964,34 @@ def _sync_uni_from_search(uni_task_new, ut_with_block_list) -> None:
 
 # ── DNN-aware split helpers ───────────────────────────────────────────────────
 
+def _measured_full_split_uni_probe(
+    dnn_task, st_orig, eval_kwargs, enabled_boundaries=None
+):
+    """
+    Return a UNI full-split probe using measured TRT full-split timing.
+
+    The probe operates on copies so paper-style UNI HEU/OPT feasibility checks do
+    not mutate the canonical SS/UNI task state.
+    """
+    dt_probe = deepcopy(dnn_task)
+    st_probe = deepcopy(st_orig)
+    if enabled_boundaries is None:
+        app_r = apply_full_split_mask(dt_probe, st_probe, 0, **eval_kwargs)
+    else:
+        boundary_count = len(st_probe.inference_segment_list[0].base_block_list) - 1
+        full_mask = [1 if idx in set(enabled_boundaries) else 0 for idx in range(boundary_count)]
+        app_r = evaluate_and_apply_mask(dt_probe, st_probe, full_mask, 0, **eval_kwargs)
+    if not app_r.success:
+        return False, None, app_r
+    return True, convert_task_SS_to_UNI(st_probe), app_r
+
 def _dnn_apply_k_split(
     dnn_task, seg_task, segment_idx, k, eval_kwargs, policy_name="all"
 ) -> MaskApplicationResult:
     """
     DNN-aware replacement for SegInfTask.split_segment(segment_idx, k).
 
-    Computes balanced K-chunk mask, evaluates via TRT (cached), patches the segment.
+    Computes the measured-best K-chunk mask via TRT/cache and patches the segment.
     """
     return apply_k_chunks(
         dnn_task, seg_task, segment_idx, k,
@@ -1928,6 +2004,7 @@ def _dnn_split_largest_excluding_highest(
     task_map: dict,
     eval_kwargs: dict,
     policy_name: str = "all",
+    search_stats=None,
 ) -> Tuple[bool, Optional[int], Optional[MaskApplicationResult]]:
     """
     DNN-aware replacement for split_largest_block_excluding_highest().
@@ -1954,7 +2031,7 @@ def _dnn_split_largest_excluding_highest(
     dt, _ = task_map[str(target_st.id)]
     app_r = apply_k_chunks(
         dt, target_st, s_idx, cur_n + 1,
-        policy_name=policy_name, **eval_kwargs
+        policy_name=policy_name, search_stats=search_stats, **eval_kwargs
     )
     return app_r.success, task_idx, app_r
 
@@ -1966,13 +2043,14 @@ def _dnn_uni_split_largest_excluding_highest(
     task_map: dict,
     eval_kwargs: dict,
     policy_name: str = "all",
+    search_stats=None,
 ) -> Tuple[bool, Optional[int], Optional[MaskApplicationResult]]:
     """
     UNI fallback equivalent of _dnn_split_largest_excluding_highest().
 
     The largest-block decision is made on a disposable SS view, but the split is
     applied directly to the canonical UNI task.  This preserves measured TRT
-    chunk timings and avoids a SS->UNI reconstruction from base block sums.
+    chunk timings when choosing the next split.
     """
     best = None
     for task_idx in range(1, len(ss_view_task_list)):
@@ -1995,7 +2073,7 @@ def _dnn_uni_split_largest_excluding_highest(
     dt, st_orig = task_map[str(original_st.id)]
     app_r = _uni_apply_k_chunks(
         dt, st_orig, uni_tasks[task_idx], s_idx, cur_n + 1, eval_kwargs,
-        policy_name=policy_name,
+        policy_name=policy_name, search_stats=search_stats,
     )
     return app_r.success, task_idx, app_r
 
@@ -2008,61 +2086,24 @@ def _uni_apply_k_chunks(
     new_k: int,
     eval_kwargs: dict,
     policy_name: str = "all",
+    search_stats=None,
 ) -> MaskApplicationResult:
     """
     Apply a K-chunk split in UNI space with TRT evaluation.
 
     Extracts the TRT GPU mask, evaluates it, and reconstructs the UNI
-    G_block_list as [cpu_pre+g_0, g_1, ..., g_{K-2}, g_{K-1}+cpu_post].
+    G_block_list with CPU pre/post as separate fixed UNI blocks.
     """
-    from src.optimization.balanced_splitter import (
-        balanced_split, policy_aware_balanced_split,
-    )
-    from src.integration.split_point_policy import get_enabled_boundaries
-
-    seg = st_orig.inference_segment_list[s_idx]
-    base_times = seg.base_block_list
-    N = len(base_times)
-
-    if policy_name and policy_name.lower() != "all":
-        enabled = get_enabled_boundaries(dnn_task.model_name, policy_name, N - 1)
-        plan = policy_aware_balanced_split(
-            base_times, new_k, enabled, model_name=dnn_task.model_name
-        )
-    else:
-        plan = balanced_split(base_times, new_k, model_name=dnn_task.model_name)
-
-    # Apply (in SS mode, st_orig has the same base GPU blocks)
-    app_r = evaluate_and_apply_mask(
-        dnn_task, st_orig, plan.mask, s_idx, **eval_kwargs
+    app_r = apply_k_chunks(
+        dnn_task, st_orig, s_idx, new_k, policy_name=policy_name,
+        search_stats=search_stats, **eval_kwargs
     )
 
     if not app_r.success:
         return app_r
 
-    # Reconstruct UNI G_block_list for ut_target.  Keep this path consistent
-    # with _uni_apply_raw_mask: measured TRT chunk timings are authoritative and
-    # must be written directly into the UNI task.  A later SS->UNI conversion
-    # would reconstruct from base_block_list sums and lose measured timings.
-    measured = app_r.selected_chunk_times  # K measured GPU chunk times
-    cpu_pre = float(getattr(dnn_task, "cpu_pre_ms", 0.0))
-    cpu_post = float(getattr(dnn_task, "cpu_post_ms", 0.0))
-
-    if len(measured) == 1:
-        uni_g_list = [cpu_pre + measured[0] + cpu_post]
-    elif measured:
-        uni_g_list = [cpu_pre + measured[0]] + list(measured[1:-1]) + [measured[-1] + cpu_post]
-        uni_g_list = [t for t in uni_g_list if t > 0.0]
-    else:
-        uni_g_list = [cpu_pre + cpu_post]
-
-    seg_ut = ut_target.inference_segment_list[s_idx]
-    seg_ut.splitting_config = _uni_config_from_trt_mask(ut_target, plan.mask)
-    seg_ut.G_block_list = list(uni_g_list)
-    ut_target.G_segment_list[s_idx] = list(uni_g_list)
-    ut_target.G = sum(sum(b) for b in ut_target.G_segment_list)
-    ut_target.max_G_block = max(
-        (max(b) for b in ut_target.G_segment_list if b), default=0.0
+    _patch_uni_measured_blocks(
+        dnn_task, ut_target, s_idx, app_r.mask, app_r.selected_chunk_times
     )
 
     return app_r
@@ -2080,11 +2121,11 @@ def _uni_apply_raw_mask(
     Apply a raw TRT boundary mask in UNI space with TRT evaluation.
 
     Evaluates the given TRT mask on st_orig, then reconstructs ut_target's
-    G_block_list as [cpu_pre+g_0, g_1, ..., g_{K-2}, g_{K-1}+cpu_post].
+    G_block_list with CPU pre/post as separate fixed UNI blocks.
 
     Used by paper-style UNI search functions (search_optimal_uni_mask,
     search_heuristic_uni_mask) which generate masks directly rather than
-    going through balanced_split.
+    going through measured K-search.
     """
     # Apply mask to SS task (st_orig has the GPU base blocks)
     app_r = evaluate_and_apply_mask(
@@ -2094,20 +2135,48 @@ def _uni_apply_raw_mask(
     if not app_r.success:
         return app_r
 
-    # Reconstruct UNI G_block_list
-    measured = app_r.selected_chunk_times
+    _patch_uni_measured_blocks(
+        dnn_task, ut_target, s_idx, trt_mask, app_r.selected_chunk_times
+    )
+
+    return app_r
+
+
+def _uni_g_blocks_from_measured_chunks(
+    dnn_task, measured_chunks: List[float]
+) -> List[float]:
+    """
+    Build a measured UNI block list using the same C/G separation as
+    SegInfTask.convert_SS_to_UNI().
+
+    Positive CPU pre/post blocks remain separate fixed UNI blocks.  Measured TRT
+    GPU chunks replace the current GPU groups, but are not merged with CPU.
+    """
+    blocks: List[float] = []
     cpu_pre = float(getattr(dnn_task, "cpu_pre_ms", 0.0))
     cpu_post = float(getattr(dnn_task, "cpu_post_ms", 0.0))
+    if cpu_pre > 0.0:
+        blocks.append(cpu_pre)
+    blocks.extend(float(t) for t in measured_chunks)
+    if cpu_post > 0.0:
+        blocks.append(cpu_post)
+    if not blocks:
+        blocks.append(0.0)
+    return blocks
 
-    if len(measured) == 1:
-        uni_g_list = [cpu_pre + measured[0] + cpu_post]
-    elif measured:
-        uni_g_list = [cpu_pre + measured[0]] + list(measured[1:-1]) + [measured[-1] + cpu_post]
-        uni_g_list = [t for t in uni_g_list if t > 0.0]
-    else:
-        uni_g_list = [cpu_pre + cpu_post]
 
-    # Update ut_target in-place
+def _patch_uni_measured_blocks(
+    dnn_task,
+    ut_target,
+    s_idx: int,
+    trt_mask: List[int],
+    measured_chunks: List[float],
+) -> None:
+    """
+    Patch a UNI task with measured TRT GPU timings without changing the
+    simulation UNI/SS block semantics.
+    """
+    uni_g_list = _uni_g_blocks_from_measured_chunks(dnn_task, measured_chunks)
     seg_ut = ut_target.inference_segment_list[s_idx]
     seg_ut.splitting_config = _uni_config_from_trt_mask(ut_target, trt_mask)
     seg_ut.G_block_list = list(uni_g_list)
@@ -2116,8 +2185,6 @@ def _uni_apply_raw_mask(
     ut_target.max_G_block = max(
         (max(b) for b in ut_target.G_segment_list if b), default=0.0
     )
-
-    return app_r
 
 
 def _uni_config_from_trt_mask(uni_task, trt_mask: List[int]) -> List[int]:

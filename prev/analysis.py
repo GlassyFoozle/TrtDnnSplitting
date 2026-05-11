@@ -1,10 +1,9 @@
 import math
 import os
 from copy import deepcopy
-from src.rta.task import InferenceSegment
+from task import InferenceSegment
 
 NUMERATOR_EXPLOSION_LIMIT = 10**18
-FLOAT_TIE_EPSILON = 1e-12
 _SS_R_CHOICE_STATS = None
 
 
@@ -170,7 +169,7 @@ def get_SS_R(sorted_task_list, i, R_list):
     R_req, R_req_B_high, R_req_B_low, _ = get_SS_R_req(sorted_task_list, i, R_list)
     R_job, R_job_B_high, R_job_B_low, _ = get_SS_R_job(sorted_task_list, i, R_list)
 
-    if R_req <= R_job + FLOAT_TIE_EPSILON:
+    if R_req <= R_job:
         R, B_high, B_low = R_req, R_req_B_high, R_req_B_low
         _record_SS_R_choice("req")
     else:

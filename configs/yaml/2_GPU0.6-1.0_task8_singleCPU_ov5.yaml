@@ -8,7 +8,7 @@ utilization_range: [0.7, 0.9]
 utilization_step: 0.05
 number_of_tasks_per_cpu_range: [8, 8]
 period_range: [1000, 10000]
-G_ratio_range: [0.6, 1.0]
+G_ratio_range: [1.0, 1.0]
 number_of_inference_segments_range: [1, 1]
 max_block_count_range: [20, 20]
 G_utilization_threshold_range: [1.0, 1.0]

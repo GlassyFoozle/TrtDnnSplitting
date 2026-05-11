@@ -235,7 +235,7 @@ def plot_with_matplotlib(
         ax.yaxis.set_major_locator(MultipleLocator(0.2))
         ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
         if include_legend:
-            ax.legend(loc="upper right", frameon=True, framealpha=0.88, markerscale=0.5)
+            ax.legend(loc="lower left", frameon=True, framealpha=0.88, markerscale=0.5)
         fig.tight_layout()
         return fig
 
