@@ -1549,25 +1549,25 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
             if is_last or tolerance_i <= 0:
                 break
 
-            # Convert to SS to check tolerance on max_G_block
-            ss_tasks_tmp = convert_task_list_to_SS(uni_tasks)
+            # Convert a copy to SS to check tolerance on max_G_block.  The
+            # canonical UNI state must keep measured TRT timings; converting the
+            # live UNI task back and forth reconstructs from base_block_list and
+            # can discard measured split timings.
+            ss_tasks_tmp = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
             if does_all_lower_meet_tolerance(ss_tasks_tmp, i, target_tol):
-                uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
                 meet_tolerance = True
                 break
 
             split_target = find_splitting_target(ss_tasks_tmp, i, target_tol)
             if split_target is None:
-                uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
                 break
 
             t_idx, s_idx, cur_n = split_target
             dt, st_orig = task_map[str(sorted_task_list[t_idx].id)]
-            ut_target = ss_tasks_tmp[t_idx]
+            ut_target = uni_tasks[t_idx]
             if cur_n >= _policy_max_chunks(
-                dt, ut_target.inference_segment_list[s_idx], policy_name
+                dt, st_orig.inference_segment_list[s_idx], policy_name
             ):
-                uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
                 break
 
             # DNN-aware UNI split: extract TRT mask for new K, evaluate, apply
@@ -1579,10 +1579,7 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
             iterations += 1
             result.stats.update(app_r)
             if not app_r.success:
-                uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
                 break
-
-            uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
 
             R_list, new_tol = update_UNI_R_list_and_tolerance_list(uni_tasks, i)
             tolerance_list[:i + 1] = new_tol
@@ -1594,13 +1591,13 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
             continue
 
         # Step 3: fallback
-        ss_tasks_fb = convert_task_list_to_SS(uni_tasks)
-        splitted, splitted_idx, app_r = _dnn_split_largest_excluding_highest(
-            ss_tasks_fb, task_map, eval_kwargs, policy_name=policy_name
+        ss_tasks_fb = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
+        splitted, splitted_idx, app_r = _dnn_uni_split_largest_excluding_highest(
+            uni_tasks, ss_tasks_fb, sorted_task_list, task_map, eval_kwargs,
+            policy_name=policy_name
         )
         if app_r is not None:
             result.stats.update(app_r)
-        uni_tasks = convert_task_list_to_UNI(ss_tasks_fb)
         if not splitted:
             schedulable = False
             break
@@ -1686,24 +1683,21 @@ def _run_uni_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations
         while iterations < max_iterations:
             target_tol = min(tolerance_list[:i + 1])
 
-            ss_tasks_tmp = convert_task_list_to_SS(uni_tasks)
+            ss_tasks_tmp = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
             if does_all_lower_meet_tolerance(ss_tasks_tmp, i, target_tol):
-                uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
                 meet_tolerance = True
                 break
 
             split_target = find_splitting_target(ss_tasks_tmp, i, target_tol)
             if split_target is None:
-                uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
                 break
 
             t_idx, s_idx, cur_n = split_target
             dt, st_orig = task_map[str(sorted_task_list[t_idx].id)]
-            ut_target = ss_tasks_tmp[t_idx]
+            ut_target = uni_tasks[t_idx]
             if cur_n >= _policy_max_chunks(
-                dt, ut_target.inference_segment_list[s_idx], policy_name
+                dt, st_orig.inference_segment_list[s_idx], policy_name
             ):
-                uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
                 break
 
             new_k = cur_n + 1
@@ -1714,10 +1708,8 @@ def _run_uni_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations
             iterations += 1
             result.stats.update(app_r)
             if not app_r.success:
-                uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
                 break
 
-            uni_tasks = convert_task_list_to_UNI(ss_tasks_tmp)
             R_list, new_tol = update_UNI_R_list_and_tolerance_list(uni_tasks, i)
             tolerance_list[:i + 1] = new_tol
 
@@ -1967,10 +1959,51 @@ def _dnn_split_largest_excluding_highest(
     return app_r.success, task_idx, app_r
 
 
+def _dnn_uni_split_largest_excluding_highest(
+    uni_tasks,
+    ss_view_task_list,
+    original_sorted_task_list,
+    task_map: dict,
+    eval_kwargs: dict,
+    policy_name: str = "all",
+) -> Tuple[bool, Optional[int], Optional[MaskApplicationResult]]:
+    """
+    UNI fallback equivalent of _dnn_split_largest_excluding_highest().
+
+    The largest-block decision is made on a disposable SS view, but the split is
+    applied directly to the canonical UNI task.  This preserves measured TRT
+    chunk timings and avoids a SS->UNI reconstruction from base block sums.
+    """
+    best = None
+    for task_idx in range(1, len(ss_view_task_list)):
+        st_view = ss_view_task_list[task_idx]
+        original_st = original_sorted_task_list[task_idx]
+        dt, st_orig = task_map[str(original_st.id)]
+        for s_idx, seg_view in enumerate(st_view.inference_segment_list):
+            seg_orig = st_orig.inference_segment_list[s_idx]
+            if seg_view.size >= _policy_max_chunks(dt, seg_orig, policy_name):
+                continue
+            cur_max = max(seg_view.G_block_list) if seg_view.G_block_list else 0.0
+            if best is None or cur_max > best[0]:
+                best = (cur_max, task_idx, s_idx, seg_view.size)
+
+    if best is None:
+        return False, None, None
+
+    _, task_idx, s_idx, cur_n = best
+    original_st = original_sorted_task_list[task_idx]
+    dt, st_orig = task_map[str(original_st.id)]
+    app_r = _uni_apply_k_chunks(
+        dt, st_orig, uni_tasks[task_idx], s_idx, cur_n + 1, eval_kwargs,
+        policy_name=policy_name,
+    )
+    return app_r.success, task_idx, app_r
+
+
 def _uni_apply_k_chunks(
     dnn_task,
     st_orig,        # original SS SegInfTask (has base_block_list with N GPU chunks)
-    ut_target,      # current SS version of UNI task (has base_block_list too)
+    ut_target,      # canonical UNI task to patch with reconstructed G blocks
     s_idx: int,
     new_k: int,
     eval_kwargs: dict,
@@ -1987,7 +2020,7 @@ def _uni_apply_k_chunks(
     )
     from src.integration.split_point_policy import get_enabled_boundaries
 
-    seg = ut_target.inference_segment_list[s_idx]
+    seg = st_orig.inference_segment_list[s_idx]
     base_times = seg.base_block_list
     N = len(base_times)
 
@@ -2007,26 +2040,26 @@ def _uni_apply_k_chunks(
     if not app_r.success:
         return app_r
 
-    # Reconstruct UNI G_block_list for ut_target
-    # UNI task has cpu_pre and cpu_post baked into first/last blocks
+    # Reconstruct UNI G_block_list for ut_target.  Keep this path consistent
+    # with _uni_apply_raw_mask: measured TRT chunk timings are authoritative and
+    # must be written directly into the UNI task.  A later SS->UNI conversion
+    # would reconstruct from base_block_list sums and lose measured timings.
     measured = app_r.selected_chunk_times  # K measured GPU chunk times
-    C_list = getattr(dnn_task, "C_list", [dnn_task.cpu_pre_ms, dnn_task.cpu_post_ms])
-    cpu_pre = C_list[0] if len(C_list) > 0 else 0.0
-    cpu_post = C_list[-1] if len(C_list) > 1 else 0.0
+    cpu_pre = float(getattr(dnn_task, "cpu_pre_ms", 0.0))
+    cpu_post = float(getattr(dnn_task, "cpu_post_ms", 0.0))
 
-    if measured:
+    if len(measured) == 1:
+        uni_g_list = [cpu_pre + measured[0] + cpu_post]
+    elif measured:
         uni_g_list = [cpu_pre + measured[0]] + list(measured[1:-1]) + [measured[-1] + cpu_post]
-        # Remove zero-ms CPU blocks (consistent with convert_SS_to_UNI)
         uni_g_list = [t for t in uni_g_list if t > 0.0]
     else:
         uni_g_list = [cpu_pre + cpu_post]
 
-    # Update ut_target segment (which is in SS form before UNI conversion)
-    from src.integration.mask_applicator import _patch_seg_task
-    seg.splitting_config = list(plan.mask)
-    seg.G_block_list = measured  # SS blocks stay as measured GPU chunks
-    seg.splitting_config = list(plan.mask)
-    ut_target.G_segment_list[s_idx] = measured
+    seg_ut = ut_target.inference_segment_list[s_idx]
+    seg_ut.splitting_config = _uni_config_from_trt_mask(ut_target, plan.mask)
+    seg_ut.G_block_list = list(uni_g_list)
+    ut_target.G_segment_list[s_idx] = list(uni_g_list)
     ut_target.G = sum(sum(b) for b in ut_target.G_segment_list)
     ut_target.max_G_block = max(
         (max(b) for b in ut_target.G_segment_list if b), default=0.0
@@ -2066,7 +2099,9 @@ def _uni_apply_raw_mask(
     cpu_pre = float(getattr(dnn_task, "cpu_pre_ms", 0.0))
     cpu_post = float(getattr(dnn_task, "cpu_post_ms", 0.0))
 
-    if measured:
+    if len(measured) == 1:
+        uni_g_list = [cpu_pre + measured[0] + cpu_post]
+    elif measured:
         uni_g_list = [cpu_pre + measured[0]] + list(measured[1:-1]) + [measured[-1] + cpu_post]
         uni_g_list = [t for t in uni_g_list if t > 0.0]
     else:
@@ -2074,7 +2109,7 @@ def _uni_apply_raw_mask(
 
     # Update ut_target in-place
     seg_ut = ut_target.inference_segment_list[s_idx]
-    seg_ut.splitting_config = list(trt_mask)
+    seg_ut.splitting_config = _uni_config_from_trt_mask(ut_target, trt_mask)
     seg_ut.G_block_list = list(uni_g_list)
     ut_target.G_segment_list[s_idx] = list(uni_g_list)
     ut_target.G = sum(sum(b) for b in ut_target.G_segment_list)
@@ -2083,6 +2118,36 @@ def _uni_apply_raw_mask(
     )
 
     return app_r
+
+
+def _uni_config_from_trt_mask(uni_task, trt_mask: List[int]) -> List[int]:
+    """
+    Expand a TRT GPU-boundary mask into UNI segment boundary space.
+
+    UNI base blocks may include positive CPU pre/post blocks.  Boundaries touching
+    CPU blocks are fixed split points and have no TRT counterpart, so storing the
+    raw TRT mask directly in a UNI InferenceSegment can make later UNI->SS
+    conversion index past the end of splitting_config.
+    """
+    seg = uni_task.inference_segment_list[0]
+    block_sources = getattr(uni_task, "_UNI_block_sources", None)
+    if not block_sources:
+        if len(trt_mask) == max(seg.max_block_count - 1, 0):
+            return list(trt_mask)
+        return list(getattr(uni_task, "non_splitting_config", []))
+
+    config: List[int] = []
+    for boundary_idx in range(max(len(block_sources) - 1, 0)):
+        left = block_sources[boundary_idx]
+        right = block_sources[boundary_idx + 1]
+        if left[0] == "C" or right[0] == "C":
+            config.append(1)
+        elif left[0] == "G" and right[0] == "G" and left[1] == right[1]:
+            trt_idx = left[2]
+            config.append(int(trt_mask[trt_idx]) if trt_idx < len(trt_mask) else 0)
+        else:
+            config.append(1)
+    return config
 
 
 # ── Reporting helpers ─────────────────────────────────────────────────────────

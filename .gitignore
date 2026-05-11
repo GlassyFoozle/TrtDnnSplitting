@@ -41,3 +41,25 @@ cpp_runtime/build/
 *.swo
 .idea/
 .vscode/
+
+# Live profiling generated caches/artifacts
+artifacts/chunk_cache/
+artifacts/logs/
+artifacts/onnx/
+artifacts/engines/
+
+# Ignore all generated split configs except baseline dag_aligned_full configs
+artifacts/split_configs/**
+!artifacts/split_configs/
+!artifacts/split_configs/*/
+!artifacts/split_configs/*/dag_aligned_full.json
+
+# Root-level generated result logs/reports
+results/*.log
+results/*.md
+results/sim_zip_analysis/
+
+# Local backups / archives
+backups/
+*.zip
+configs/yaml/260511_configs/

@@ -32,6 +32,38 @@ if TYPE_CHECKING:
     from src.integration.live_budget import LiveProfileBudget
 
 
+def _enforce_non_decreasing_split_total(
+    base_times: List[float],
+    mask: List[int],
+    chunk_times: List[float],
+    *,
+    eps: float = 1e-9,
+) -> List[float]:
+    """
+    Keep split variants conservative relative to the no-split baseline.
+
+    A split can reduce max blocking, but it should not reduce total GPU work
+    below the K=1 baseline used by the RTA.  Some cached/interval-assembled
+    profile data is lower than the pre-profiled baseline, usually due to
+    profiling noise or non-equivalent timing provenance.  In that case, charge
+    the deficit to the largest chunk so total work is non-decreasing and the
+    blocking term remains conservative.
+    """
+    adjusted = [float(t) for t in chunk_times]
+    if not adjusted or sum(mask) + 1 <= 1:
+        return adjusted
+
+    baseline_total = float(sum(base_times))
+    measured_total = float(sum(adjusted))
+    if baseline_total <= 0.0 or measured_total + eps >= baseline_total:
+        return adjusted
+
+    deficit = baseline_total - measured_total
+    idx = max(range(len(adjusted)), key=lambda i: adjusted[i])
+    adjusted[idx] += deficit
+    return adjusted
+
+
 @dataclass
 class MaskApplicationResult:
     """Result of evaluate_and_apply_mask()."""
@@ -188,6 +220,9 @@ def evaluate_and_apply_mask(
                         else:
                             chunk_times = assembled.per_chunk_gpu_mean_ms or []
                         if chunk_times and len(chunk_times) == k:
+                            chunk_times = _enforce_non_decreasing_split_total(
+                                base_times, mask, chunk_times
+                            )
                             _patch_seg_task(seg_task, seg, mask, chunk_times, segment_idx)
                             dnn_task.current_chunk_times_ms = list(chunk_times)
                             dnn_task.selected_variant_name = assembled.variant_name
@@ -279,6 +314,10 @@ def evaluate_and_apply_mask(
     if len(chunk_times) != k:
         # Use estimated if count mismatch
         chunk_times = _apply_mask_to_chunk_times(base_times, mask)
+    else:
+        chunk_times = _enforce_non_decreasing_split_total(
+            base_times, mask, chunk_times
+        )
 
     _patch_seg_task(seg_task, seg, mask, chunk_times, segment_idx)
 

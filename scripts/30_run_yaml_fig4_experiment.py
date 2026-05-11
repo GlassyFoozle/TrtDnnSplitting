@@ -93,6 +93,13 @@ _ALGORITHM_SETS: Dict[str, List[AlgorithmSpec]] = {
         ("uni", "tol",    "UNI-tol"),
         ("uni", "tol-fb", "UNI-tol-fb"),
     ],
+    "heu_tol_fb_only": [
+        ("ss", "heu",    "SS-heu"),
+        ("ss", "tol-fb", "SS-tol-fb"),
+        ("uni", "heu",    "UNI-heu"),
+        ("uni", "tol-fb", "UNI-tol-fb"),
+    ]
+
 }
 # Backward-compatible alias kept for any external scripts that reference it.
 _DEFAULT_ALGORITHMS: List[AlgorithmSpec] = _ALGORITHM_SETS["main4"]

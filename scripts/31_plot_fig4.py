@@ -3,7 +3,8 @@
 31_plot_fig4.py — Plot YAML-driven Fig.4 schedulability curves.
 
 Reads schedulability_ratio.csv from a script-30 run and writes PNG/PDF.
-Supports all eight algorithms from the full2×4 experiment matrix.
+By default it renders the six paper-facing curves:
+Offload/Uni × Tolerance/Heuristic/Optimal.
 """
 
 from __future__ import annotations
@@ -19,6 +20,11 @@ REPO = Path(__file__).resolve().parent.parent
 _PLOTS_DIR = REPO / "results" / "plots"
 
 # ── Render order (lower index = front of legend) ─────────────────────────────
+_ORDER_MAIN6 = [
+    "SS-tol-fb", "SS-heu", "SS-opt",
+    "UNI-tol-fb", "UNI-heu", "UNI-opt",
+]
+
 _ORDER_FULL8 = [
     "SS-tol-fb", "SS-heu", "SS-tol", "SS-opt",
     "UNI-tol-fb", "UNI-heu", "UNI-tol", "UNI-opt",
@@ -33,31 +39,46 @@ _LEGACY_ALIASES = {
 }
 
 _STYLE: Dict[str, dict] = {
-    # SS algorithms — blue family, solid lines
-    "SS-tol-fb": {"color": "#1f77b4", "marker": "o",  "linestyle": "-"},
-    "SS-heu":    {"color": "#17becf", "marker": "v",  "linestyle": "-"},
-    "SS-tol":    {"color": "#aec7e8", "marker": "^",  "linestyle": "-."},
-    "SS-opt":    {"color": "#ff7f0e", "marker": "D",  "linestyle": "--"},
-    # UNI algorithms — green/warm family, solid lines
-    "UNI-tol-fb": {"color": "#2ca02c", "marker": "s",  "linestyle": "-"},
-    "UNI-heu":    {"color": "#9467bd", "marker": "P",  "linestyle": "-"},
-    "UNI-tol":    {"color": "#98df8a", "marker": "X",  "linestyle": "-."},
-    "UNI-opt":    {"color": "#d62728", "marker": "^",  "linestyle": "--"},
+    # Styles mirror simulation.py plot_bw_schedulability_ratio.
+    # Open markers (markerfacecolor="none") except x and * (filled with line color).
+    "SS-tol-fb":  {"color": "#8000FF", "marker": "*", "linestyle": "-",  "zorder": 8},
+    "SS-heu":     {"color": "#00FF00", "marker": "v", "linestyle": "--", "zorder": 5},
+    "SS-tol":     {"color": "#aec7e8", "marker": "p", "linestyle": "-.", "zorder": 3},
+    "SS-opt":     {"color": "#008000", "marker": "D", "linestyle": "-",  "zorder": 4},
+    "UNI-tol-fb": {"color": "#FF0000", "marker": "x", "linestyle": "-",  "zorder": 7},
+    "UNI-heu":    {"color": "#00BFFF", "marker": "^", "linestyle": "--", "zorder": 5},
+    "UNI-tol":    {"color": "#98df8a", "marker": "X", "linestyle": "-.", "zorder": 3},
+    "UNI-opt":    {"color": "#0000FF", "marker": "s", "linestyle": "-",  "zorder": 4},
+}
+
+_LEGEND_LABELS: Dict[str, str] = {
+    "SS-tol-fb":  "Offload-Tolerance",
+    "SS-heu":     "Offload-Heuristic",
+    "SS-tol":     "Offload-Tol",
+    "SS-opt":     "Offload-Optimal",
+    "UNI-tol-fb": "Uni-Tolerance",
+    "UNI-heu":    "Uni-Heuristic",
+    "UNI-tol":    "Uni-Tol",
+    "UNI-opt":    "Uni-Optimal",
 }
 
 _PLOT_MODE_FILTERS: Dict[str, Optional[Set[str]]] = {
-    "all":      None,
+    "all":      set(_ORDER_MAIN6),
+    "full8":    None,
     "main4":    {"SS-tol-fb", "UNI-tol-fb", "SS-opt", "UNI-opt",
                  "SS_ours", "UNI_ours", "SS_Buttazzo", "UNI_Buttazzo"},
     "ss_only":  {"SS-tol-fb", "SS-heu", "SS-tol", "SS-opt"},
     "uni_only": {"UNI-tol-fb", "UNI-heu", "UNI-tol", "UNI-opt"},
+    "heu_tol_fb_only": {"SS-heu", "SS-tol-fb", "UNI-heu", "UNI-tol-fb"},
 }
 
 _PLOT_MODE_ORDER: Dict[str, List[str]] = {
-    "all":      _ORDER_FULL8,
+    "all":      _ORDER_MAIN6,
+    "full8":    _ORDER_FULL8,
     "main4":    ["SS-tol-fb", "UNI-tol-fb", "SS-opt", "UNI-opt"],
     "ss_only":  ["SS-tol-fb", "SS-heu", "SS-tol", "SS-opt"],
     "uni_only": ["UNI-tol-fb", "UNI-heu", "UNI-tol", "UNI-opt"],
+    "heu_tol_fb_only": ["SS-heu", "SS-tol-fb", "UNI-heu", "UNI-tol-fb"],
 }
 
 
@@ -93,7 +114,7 @@ def parse_args() -> argparse.Namespace:
         default="all",
         choices=list(_PLOT_MODE_FILTERS.keys()),
         dest="plot_mode",
-        help="Which algorithms to include: all|main4|ss_only|uni_only",
+        help="Which algorithms to include: all|full8|main4|ss_only|uni_only|heu_tol_fb_only",
     )
     return ap.parse_args()
 
@@ -142,6 +163,10 @@ def render_order(series: Dict[str, List[Tuple[float, float]]], plot_mode: str) -
     return primary + extras
 
 
+def legend_label(label: str) -> str:
+    return _LEGEND_LABELS.get(label, label)
+
+
 def plot_with_matplotlib(
     series: Dict[str, List[Tuple[float, float]]],
     title: str,
@@ -152,41 +177,81 @@ def plot_with_matplotlib(
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib import font_manager as fm
+    from matplotlib.ticker import FormatStrFormatter, MultipleLocator
 
-    figsize = (8.5, 5.0) if len(series) > 4 else (7, 4.8)
-    fig, ax = plt.subplots(figsize=figsize)
+    # ── Font: prefer Times New Roman, fall back to Liberation Serif, then serif ─
+    font_family = "serif"
+    available_fonts = {f.name for f in fm.fontManager.ttflist}
+    if "Times New Roman" in available_fonts:
+        font_family = "Times New Roman"
+    else:
+        liberation = Path("/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf")
+        if liberation.exists():
+            fm.fontManager.addfont(str(liberation))
+            font_family = fm.FontProperties(fname=str(liberation)).get_name()
 
-    for label in render_order(series, plot_mode):
-        points = series.get(label, [])
-        if not points:
-            continue
-        xs, ys = zip(*points)
-        style = _STYLE.get(label, {"color": None, "marker": "o", "linestyle": "-"})
-        ax.plot(
-            xs, ys,
-            label=label,
-            color=style["color"],
-            marker=style["marker"],
-            linestyle=style["linestyle"],
-            linewidth=1.8,
-            markersize=5,
-        )
+    # ── X-axis range derived from data ────────────────────────────────────────
+    all_x = sorted({x for pts in series.values() for x, _ in pts})
+    if not all_x:
+        return
+    x_pad = 0.025
+    xlim = (all_x[0] - x_pad, all_x[-1] + x_pad)
+    order = render_order(series, plot_mode)
 
-    ax.set_xlabel("Total U across CPUs")
-    ax.set_ylabel("Schedulability Ratio")
-    ax.set_title(title)
-    ax.set_ylim(-0.05, 1.05)
-    ax.grid(True, alpha=0.3)
-    ncols = 2 if len(series) > 4 else 1
-    ax.legend(loc="best", fontsize=8, ncol=ncols)
-    fig.tight_layout()
+    def _draw(include_legend: bool):
+        fig, ax = plt.subplots(figsize=(6.6, 6.6))
+        for label in order:
+            points = series.get(label, [])
+            if not points:
+                continue
+            xs, ys = zip(*points)
+            style = _STYLE.get(label, {"color": "#333333", "marker": "o",
+                                       "linestyle": "-", "zorder": 3})
+            color = style["color"]
+            marker = style["marker"]
+            mfc = color if marker in {"x", "*"} else "none"
+            ax.plot(
+                xs, ys,
+                color=color,
+                linestyle=style["linestyle"],
+                linewidth=1.55,
+                marker=marker,
+                markerfacecolor=mfc,
+                markeredgecolor=color,
+                markeredgewidth=2.0,
+                markersize=15.75,
+                label=legend_label(label),
+                zorder=style.get("zorder", 3),
+            )
+        ax.set_xlabel("Utilization", fontsize=24)
+        ax.set_ylabel("Schedulability Ratio", fontsize=24)
+        ax.tick_params(axis="both", which="major", labelsize=24)
+        ax.grid(True, linestyle=(0, (5, 4)), linewidth=1.4, alpha=0.7)
+        ax.set_xlim(xlim)
+        ax.set_ylim(0.0, 1.1)
+        ax.set_xticks(all_x)
+        ax.xaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+        ax.yaxis.set_major_locator(MultipleLocator(0.2))
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+        if include_legend:
+            ax.legend(loc="upper right", frameon=True, framealpha=0.88, markerscale=0.5)
+        fig.tight_layout()
+        return fig
 
     output_base.parent.mkdir(parents=True, exist_ok=True)
     png = output_base.with_suffix(".png")
     pdf = output_base.with_suffix(".pdf")
-    fig.savefig(png, dpi=dpi)
-    fig.savefig(pdf)
-    plt.close(fig)
+
+    with plt.rc_context({"font.family": font_family, "mathtext.fontset": "stix"}):
+        png_fig = _draw(include_legend=True)
+        png_fig.savefig(png, dpi=dpi)
+        plt.close(png_fig)
+
+        pdf_fig = _draw(include_legend=False)
+        pdf_fig.savefig(pdf)
+        plt.close(pdf_fig)
+
     print(f"Saved: {png}")
     print(f"Saved: {pdf}")
 
@@ -246,7 +311,7 @@ def plot_with_pillow(
         for x, y in coords:
             draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=color)
         draw.rectangle((width - 250, legend_y + 4, width - 230, legend_y + 14), fill=color)
-        draw.text((width - 220, legend_y), label, fill="black")
+        draw.text((width - 220, legend_y), legend_label(label), fill="black")
         legend_y += 24
 
     output_base.parent.mkdir(parents=True, exist_ok=True)
