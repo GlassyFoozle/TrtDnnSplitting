@@ -10,6 +10,7 @@ All exports use:
 """
 
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Tuple
 
@@ -21,6 +22,23 @@ import onnx
 OPSET = 17
 INPUT_NAME  = "input"
 OUTPUT_NAME = "output"
+
+
+@contextmanager
+def _disabled_mha_fastpath():
+    """Disable PyTorch MHA fastpath while exporting transformer chunks to ONNX."""
+    mha = getattr(torch.backends, "mha", None)
+    getter = getattr(mha, "get_fastpath_enabled", None)
+    setter = getattr(mha, "set_fastpath_enabled", None)
+    if getter is None or setter is None:
+        yield
+        return
+    previous = getter()
+    setter(False)
+    try:
+        yield
+    finally:
+        setter(previous)
 
 
 def export_module(
@@ -47,17 +65,18 @@ def export_module(
 
     t0 = time.perf_counter()
     with torch.no_grad():
-        torch.onnx.export(
-            module,
-            dummy,
-            str(out_path),
-            export_params=True,
-            opset_version=opset,
-            do_constant_folding=True,
-            input_names=[INPUT_NAME],
-            output_names=[OUTPUT_NAME],
-            # No dynamic_axes: fully static for best TRT optimization
-        )
+        with _disabled_mha_fastpath():
+            torch.onnx.export(
+                module,
+                dummy,
+                str(out_path),
+                export_params=True,
+                opset_version=opset,
+                do_constant_folding=True,
+                input_names=[INPUT_NAME],
+                output_names=[OUTPUT_NAME],
+                # No dynamic_axes: fully static for best TRT optimization
+            )
     elapsed = time.perf_counter() - t0
 
     # Verify the exported graph

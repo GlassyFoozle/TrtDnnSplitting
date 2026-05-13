@@ -77,16 +77,20 @@ class EvaluationResult:
     # Timing (None = not measured)
     full_gpu_mean_ms: Optional[float] = None
     full_gpu_p99_ms: Optional[float] = None
+    full_gpu_max_ms: Optional[float] = None
     chunked_gpu_mean_ms: Optional[float] = None
     chunked_gpu_p99_ms: Optional[float] = None
+    chunked_gpu_max_ms: Optional[float] = None
     overhead_ms: Optional[float] = None
     overhead_pct: Optional[float] = None
 
     # Per-chunk timing lists (indexed by merged-chunk id)
     per_chunk_gpu_mean_ms: Optional[List[float]] = None
     per_chunk_gpu_p99_ms: Optional[List[float]] = None
+    per_chunk_gpu_max_ms: Optional[List[float]] = None
     per_chunk_cpu_wall_mean_ms: Optional[List[float]] = None
     per_chunk_cpu_wall_p99_ms: Optional[List[float]] = None
+    per_chunk_cpu_wall_max_ms: Optional[List[float]] = None
 
     # Interval cache accounting (populated by evaluate_mask when not a mask-level cache hit)
     interval_cache_hits: int = 0       # combined ONNX + engine hits
@@ -100,6 +104,8 @@ class EvaluationResult:
     export_wall_s: Optional[float] = None
     build_wall_s: Optional[float] = None
     profile_wall_s: Optional[float] = None
+    profile_warmup: Optional[int] = None
+    profile_iters: Optional[int] = None
     interval_engine_build_wall_s: float = 0.0
 
     # Cold-cache design-time estimates: what this mask would have cost without caching
@@ -127,8 +133,17 @@ class EvaluationResult:
             f"profiled={self.profiled} cache_hit={self.cache_hit}",
         ]
         if self.chunked_gpu_mean_ms is not None:
+            p99_str = (
+                f"{self.chunked_gpu_p99_ms:.4f}"
+                if self.chunked_gpu_p99_ms is not None else "n/a"
+            )
+            max_str = (
+                f"{self.chunked_gpu_max_ms:.4f}"
+                if self.chunked_gpu_max_ms is not None else "n/a"
+            )
             lines.append(
-                f"  chunked : {self.chunked_gpu_mean_ms:.4f} ms (p99={self.chunked_gpu_p99_ms:.4f} ms)"
+                f"  chunked : {self.chunked_gpu_mean_ms:.4f} ms "
+                f"(p99={p99_str} ms, max={max_str} ms)"
             )
         if self.full_gpu_mean_ms is not None:
             lines.append(
@@ -399,15 +414,17 @@ def _backfill_interval_gpu_timing(
     """After profiling, write per-chunk GPU timing into each interval's timing.json.
 
     This enables cache-only assembly (Task D): once all required intervals for a
-    mask have gpu_mean_ms + gpu_p99_ms, the mask can be served without re-profiling.
+    mask have gpu_mean_ms + gpu_p99_ms + gpu_max_ms, the mask can be served
+    without re-profiling for max-WCET analysis.
     """
     means = result.per_chunk_gpu_mean_ms or []
     p99s  = result.per_chunk_gpu_p99_ms  or []
+    maxs  = result.per_chunk_gpu_max_ms  or []
     if not means or len(means) != len(groups):
         return
     for i, grp in enumerate(groups):
         t = _load_interval_timing(model_name, grp)
-        t.update({
+        update = {
             "model":           model_name,
             "source_chunk_ids": grp,
             "start_idx":       grp[0],
@@ -415,7 +432,16 @@ def _backfill_interval_gpu_timing(
             "precision":       precision,
             f"gpu_mean_ms_{precision}": means[i],
             f"gpu_p99_ms_{precision}":  p99s[i] if i < len(p99s) else means[i],
-        })
+        }
+        if i < len(maxs) and maxs[i] is not None:
+            update[f"gpu_max_ms_{precision}"] = maxs[i]
+        if result.profile_wall_s is not None:
+            update[f"source_eval_profile_wall_s_{precision}"] = result.profile_wall_s
+        if result.profile_warmup is not None:
+            update[f"profile_warmup_{precision}"] = result.profile_warmup
+        if result.profile_iters is not None:
+            update[f"profile_iters_{precision}"] = result.profile_iters
+        t.update(update)
         _save_interval_timing(model_name, grp, t)
 
 
@@ -431,7 +457,11 @@ def can_assemble_from_intervals(
     groups = _compute_merge_groups(mask)
     for grp in groups:
         t = _load_interval_timing(model_name, grp)
-        if not (t.get(f"gpu_mean_ms_{precision}") and t.get(f"gpu_p99_ms_{precision}")):
+        if not (
+            t.get(f"gpu_mean_ms_{precision}")
+            and t.get(f"gpu_p99_ms_{precision}")
+            and t.get(f"gpu_max_ms_{precision}")
+        ):
             return False
     return True
 
@@ -454,13 +484,16 @@ def assemble_from_intervals(
 
     means = []
     p99s  = []
+    maxs  = []
     for grp in groups:
         t = _load_interval_timing(model_name, grp)
         means.append(float(t.get(f"gpu_mean_ms_{precision}", 0.0)))
         p99s.append(float(t.get(f"gpu_p99_ms_{precision}", 0.0)))
+        maxs.append(float(t.get(f"gpu_max_ms_{precision}", 0.0)))
 
     chunked_mean = sum(means) if means else None
     chunked_p99  = sum(p99s)  if p99s  else None
+    chunked_max  = sum(maxs) if maxs else None
 
     result = EvaluationResult(
         model_name=model_name,
@@ -476,8 +509,10 @@ def assemble_from_intervals(
         cache_hit=True,
         chunked_gpu_mean_ms=chunked_mean,
         chunked_gpu_p99_ms=chunked_p99,
+        chunked_gpu_max_ms=chunked_max,
         per_chunk_gpu_mean_ms=means,
         per_chunk_gpu_p99_ms=p99s,
+        per_chunk_gpu_max_ms=maxs,
         notes="assembled_from_interval_timing",
     )
     out = _save_result(result)
@@ -511,6 +546,7 @@ def backfill_interval_gpu_timing_from_evals(
         mask  = d.get("mask", [])
         means = d.get("per_chunk_gpu_mean_ms") or []
         p99s  = d.get("per_chunk_gpu_p99_ms")  or []
+        maxs  = d.get("per_chunk_gpu_max_ms")  or []
         if not mask or not means:
             continue
         groups = compute_merge_groups(mask)
@@ -520,8 +556,9 @@ def backfill_interval_gpu_timing_from_evals(
             t = _load_interval_timing(model_name, grp)
             key_mean = f"gpu_mean_ms_{precision}"
             key_p99  = f"gpu_p99_ms_{precision}"
-            if t.get(key_mean) is None:
-                t.update({
+            key_max  = f"gpu_max_ms_{precision}"
+            if t.get(key_mean) is None or (maxs and t.get(key_max) is None):
+                update = {
                     "model":            model_name,
                     "source_chunk_ids": grp,
                     "start_idx":        grp[0],
@@ -529,7 +566,10 @@ def backfill_interval_gpu_timing_from_evals(
                     "precision":        precision,
                     key_mean:           means[i],
                     key_p99:            p99s[i] if i < len(p99s) else means[i],
-                })
+                }
+                if i < len(maxs) and maxs[i] is not None:
+                    update[key_max] = maxs[i]
+                t.update(update)
                 _save_interval_timing(model_name, grp, t)
                 updated += 1
     return updated
@@ -551,7 +591,7 @@ def is_mask_cached(model_name: str, mask: List[int], precision: str) -> bool:
     Checks beyond mere file existence (Fix 4):
     - JSON must be parseable
     - must not have an error field set
-    - per_chunk_gpu_mean_ms must be present and have length == sum(mask)+1
+    - per_chunk_gpu_max_ms must be present and have length == sum(mask)+1
     """
     variant_name = mask_to_variant_name(model_name, mask)
     p = _eval_json_path(model_name, variant_name, precision)
@@ -563,7 +603,7 @@ def is_mask_cached(model_name: str, mask: List[int], precision: str) -> bool:
         return False
     if d.get("error"):
         return False
-    chunk_times = d.get("per_chunk_gpu_mean_ms")
+    chunk_times = d.get("per_chunk_gpu_max_ms")
     if not chunk_times:
         return False
     expected_chunks = sum(mask) + 1
@@ -652,18 +692,24 @@ def _parse_cpp_result(json_path: Path) -> dict:
     # C++ runner returns 0.0 for the full engine when it isn't present → treat as None
     full_mean = d.get("full_engine_gpu_mean_ms") or None
     full_p99  = d.get("full_engine_gpu_p99_ms")  or None
+    full_max  = d.get("full_engine_gpu_max_ms")  or None
     if full_mean is not None and full_mean <= 0.0:
         full_mean = None
         full_p99  = None
+        full_max  = None
     return {
         "full_gpu_mean_ms": full_mean,
         "full_gpu_p99_ms": full_p99,
+        "full_gpu_max_ms": full_max,
         "chunked_gpu_mean_ms": d.get("total_chunked_gpu_mean_ms"),
         "chunked_gpu_p99_ms": d.get("total_chunked_gpu_p99_ms"),
+        "chunked_gpu_max_ms": d.get("total_chunked_gpu_max_ms"),
         "per_chunk_gpu_mean_ms": [c["gpu_mean_ms"] for c in chunks],
         "per_chunk_gpu_p99_ms": [c["gpu_p99_ms"] for c in chunks],
+        "per_chunk_gpu_max_ms": [c.get("gpu_max_ms") for c in chunks],
         "per_chunk_cpu_wall_mean_ms": [c.get("cpu_mean_ms") for c in chunks],
         "per_chunk_cpu_wall_p99_ms": [c.get("cpu_p99_ms") for c in chunks],
+        "per_chunk_cpu_wall_max_ms": [c.get("cpu_max_ms") for c in chunks],
     }
 
 
@@ -710,16 +756,22 @@ def _run_python_profiler(
     full_info = trt.get("full_engine") or {}
     full_mean = (full_info.get("gpu_ms") or {}).get("mean")
     chunked_ms = (trt.get("total_gpu_ms") or {}).get("mean")
+    full_gpu_ms = full_info.get("gpu_ms") or {}
+    total_gpu_ms = trt.get("total_gpu_ms") or {}
 
     return {
         "full_gpu_mean_ms": full_mean,
-        "full_gpu_p99_ms": (full_info.get("gpu_ms") or {}).get("p99"),
+        "full_gpu_p99_ms": full_gpu_ms.get("p99"),
+        "full_gpu_max_ms": full_gpu_ms.get("max"),
         "chunked_gpu_mean_ms": chunked_ms,
-        "chunked_gpu_p99_ms": (trt.get("total_gpu_ms") or {}).get("p99"),
+        "chunked_gpu_p99_ms": total_gpu_ms.get("p99"),
+        "chunked_gpu_max_ms": total_gpu_ms.get("max"),
         "per_chunk_gpu_mean_ms": [c["gpu_ms"]["mean"] for c in chunks],
         "per_chunk_gpu_p99_ms": [c["gpu_ms"]["p99"] for c in chunks],
+        "per_chunk_gpu_max_ms": [c["gpu_ms"].get("max") for c in chunks],
         "per_chunk_cpu_wall_mean_ms": None,
         "per_chunk_cpu_wall_p99_ms": None,
+        "per_chunk_cpu_wall_max_ms": None,
     }
 
 
@@ -936,16 +988,22 @@ def evaluate_mask(
             return result
 
     result.profile_wall_s = time.perf_counter() - t0_profile
+    result.profile_warmup = int(warmup)
+    result.profile_iters = int(iters)
 
     # ── 8. Populate timing fields ─────────────────────────────────────────────
     result.full_gpu_mean_ms = timing.get("full_gpu_mean_ms")
     result.full_gpu_p99_ms = timing.get("full_gpu_p99_ms")
+    result.full_gpu_max_ms = timing.get("full_gpu_max_ms")
     result.chunked_gpu_mean_ms = timing.get("chunked_gpu_mean_ms")
     result.chunked_gpu_p99_ms = timing.get("chunked_gpu_p99_ms")
+    result.chunked_gpu_max_ms = timing.get("chunked_gpu_max_ms")
     result.per_chunk_gpu_mean_ms = timing.get("per_chunk_gpu_mean_ms")
     result.per_chunk_gpu_p99_ms = timing.get("per_chunk_gpu_p99_ms")
+    result.per_chunk_gpu_max_ms = timing.get("per_chunk_gpu_max_ms")
     result.per_chunk_cpu_wall_mean_ms = timing.get("per_chunk_cpu_wall_mean_ms")
     result.per_chunk_cpu_wall_p99_ms = timing.get("per_chunk_cpu_wall_p99_ms")
+    result.per_chunk_cpu_wall_max_ms = timing.get("per_chunk_cpu_wall_max_ms")
 
     # Backfill per-interval GPU timing so cache-only mode can assemble masks.
     _backfill_interval_gpu_timing(model_name, groups, precision, result)
@@ -960,9 +1018,12 @@ def evaluate_mask(
         db.put(
             model_name, variant_name, precision,
             full_gpu_mean_ms=result.full_gpu_mean_ms,
+            full_gpu_max_ms=result.full_gpu_max_ms,
             per_chunk_gpu_mean_ms=result.per_chunk_gpu_mean_ms,
             per_chunk_gpu_p99_ms=result.per_chunk_gpu_p99_ms,
+            per_chunk_gpu_max_ms=result.per_chunk_gpu_max_ms,
             total_chunked_gpu_mean_ms=result.chunked_gpu_mean_ms,
+            total_chunked_gpu_max_ms=result.chunked_gpu_max_ms,
             source_json=str(cpp_raw_json) if cpp_raw_json else "",
         )
     except Exception as e:

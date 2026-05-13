@@ -22,6 +22,7 @@ def _fake_eval_result(mask, chunk_times):
         build_wall_s=0.0,
         profile_wall_s=0.0,
         estimated_cold_total_s=None,
+        per_chunk_gpu_max_ms=list(chunk_times),
         per_chunk_gpu_p99_ms=list(chunk_times),
         per_chunk_gpu_mean_ms=list(chunk_times),
         variant_name="mask_" + "".join(str(b) for b in mask),
@@ -122,6 +123,10 @@ def test_apply_k_chunks_respects_major_blocks_policy(monkeypatch):
     monkeypatch.setattr(
         "src.optimization.config_evaluator.evaluate_mask",
         mock_evaluate_mask,
+    )
+    monkeypatch.setattr(
+        "src.optimization.config_evaluator.can_assemble_from_intervals",
+        lambda *args, **kwargs: False,
     )
 
     result = apply_k_chunks(

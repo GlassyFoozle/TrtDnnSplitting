@@ -94,6 +94,8 @@ def dnn_task_to_seginftask(
     seg.base_block_list = list(base_times)
     seg.max_block_count = N
     seg.splitting_config = list(splitting_config)
+    seg._base_timing_placeholder = bool(getattr(dnn_task, "base_timing_placeholder", False))
+    seg._current_timing_measured = bool(getattr(dnn_task, "current_timing_measured", False))
     current_times = list(getattr(dnn_task, "current_chunk_times_ms", []) or [])
     expected_k = sum(splitting_config) + 1
     if len(current_times) == expected_k:

@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         help="Algorithms as model:algorithm, e.g. ss:tol-fb uni:opt",
     )
     ap.add_argument("--precision", default="fp32", choices=["fp32", "fp16"])
-    ap.add_argument("--wcet-metric", default="p99", choices=["p99", "mean"], dest="wcet_metric")
+    ap.add_argument("--wcet-metric", default="max", choices=["max", "p99", "mean"], dest="wcet_metric")
     ap.add_argument("--cpu-pre-min", type=float, default=0.5)
     ap.add_argument("--cpu-pre-max", type=float, default=2.0)
     ap.add_argument("--cpu-post-min", type=float, default=0.2)
@@ -458,6 +458,13 @@ def summarize_result(
         "unique_mask_cache_hits": int(getattr(result.stats, "unique_mask_cache_hits", 0)),
         "unique_skipped_masks": int(getattr(result.stats, "unique_skipped_masks", 0)),
         "interval_timing_cache_hits": int(getattr(result.stats, "interval_timing_cache_hits", 0)),
+        "k_split_calls": int(getattr(result.stats, "k_split_calls", 0)),
+        "k_split_cache_hits": int(getattr(result.stats, "k_split_cache_hits", 0)),
+        "k_split_candidate_masks": int(getattr(result.stats, "k_split_candidate_masks", 0)),
+        "k_split_candidate_chunk_profiles": int(getattr(result.stats, "k_split_candidate_chunk_profiles", 0)),
+        "k_split_candidate_inference_runs": int(getattr(result.stats, "k_split_candidate_inference_runs", 0)),
+        "early_stop_optimistic_checks": int(getattr(result.stats, "early_stop_optimistic_checks", 0)),
+        "early_stop_optimistic_deadline_misses": int(getattr(result.stats, "early_stop_optimistic_deadline_misses", 0)),
         "dry_run_evaluations": int(result.stats.dry_run_evaluations),
         "builds_triggered": int(result.stats.builds_triggered),
         "exports_triggered": int(result.stats.exports_triggered),
@@ -516,7 +523,7 @@ def taskset_utilization_metrics(path: Path, precision: str, wcet_metric: str) ->
         gpu = _get_base_gpu_wcet_ms(
             task["model_name"],
             precision or raw.get("precision", "fp32"),
-            wcet_metric or raw.get("wcet_metric", "p99"),
+            wcet_metric or raw.get("wcet_metric", "max"),
         ) or 0.0
         gpu_util += gpu / period
         cpu_part = cpu / period
@@ -573,6 +580,15 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_unique_mask_cache_hits": avg(items, "unique_mask_cache_hits"),
             "avg_unique_skipped_masks": avg(items, "unique_skipped_masks"),
             "avg_interval_timing_cache_hits": avg(items, "interval_timing_cache_hits"),
+            "avg_k_split_calls": avg(items, "k_split_calls"),
+            "avg_k_split_cache_hits": avg(items, "k_split_cache_hits"),
+            "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
+            "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
+            "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
+            "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
+            "avg_early_stop_optimistic_deadline_misses": avg(
+                items, "early_stop_optimistic_deadline_misses"
+            ),
             "avg_dry_run_evaluations": avg(items, "dry_run_evaluations"),
             "avg_final_active_boundaries": avg(items, "average_final_active_boundaries"),
             "disabled_active_boundaries": sum(
@@ -617,6 +633,15 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_cache_hits": avg(items, "cache_hits"),
             "avg_real_profiles": avg(items, "real_profiles"),
             "avg_skipped_cache_misses": avg(items, "skipped_cache_misses"),
+            "avg_k_split_calls": avg(items, "k_split_calls"),
+            "avg_k_split_cache_hits": avg(items, "k_split_cache_hits"),
+            "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
+            "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
+            "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
+            "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
+            "avg_early_stop_optimistic_deadline_misses": avg(
+                items, "early_stop_optimistic_deadline_misses"
+            ),
             "avg_dry_run_evaluations": avg(items, "dry_run_evaluations"),
         })
 
@@ -948,6 +973,13 @@ def main() -> int:
         "cache_hits",
         "real_profiles",
         "skipped_cache_misses",
+        "k_split_calls",
+        "k_split_cache_hits",
+        "k_split_candidate_masks",
+        "k_split_candidate_chunk_profiles",
+        "k_split_candidate_inference_runs",
+        "early_stop_optimistic_checks",
+        "early_stop_optimistic_deadline_misses",
         "dry_run_evaluations",
         "builds_triggered",
         "exports_triggered",
@@ -987,6 +1019,13 @@ def main() -> int:
         "avg_real_profiles",
         "avg_cache_hits",
         "avg_skipped_cache_misses",
+        "avg_k_split_calls",
+        "avg_k_split_cache_hits",
+        "avg_k_split_candidate_masks",
+        "avg_k_split_candidate_chunk_profiles",
+        "avg_k_split_candidate_inference_runs",
+        "avg_early_stop_optimistic_checks",
+        "avg_early_stop_optimistic_deadline_misses",
         "avg_dry_run_evaluations",
         "avg_final_active_boundaries",
         "disabled_active_boundaries",
@@ -1020,6 +1059,13 @@ def main() -> int:
         "avg_cache_hits",
         "avg_real_profiles",
         "avg_skipped_cache_misses",
+        "avg_k_split_calls",
+        "avg_k_split_cache_hits",
+        "avg_k_split_candidate_masks",
+        "avg_k_split_candidate_chunk_profiles",
+        "avg_k_split_candidate_inference_runs",
+        "avg_early_stop_optimistic_checks",
+        "avg_early_stop_optimistic_deadline_misses",
         "avg_dry_run_evaluations",
     ]
 

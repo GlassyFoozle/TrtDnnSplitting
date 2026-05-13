@@ -21,6 +21,22 @@ def test_get_enabled_boundaries_major_blocks():
     assert all(0 <= b < 20 for b in major_b)
 
 
+def test_vit_l_16_major_blocks_are_coarse_transformer_groups():
+    """ViT-L/16 major_blocks uses coarse six-block transformer groups."""
+    from src.integration.split_point_policy import get_enabled_boundaries
+
+    enabled = get_enabled_boundaries("vit_l_16", "major_blocks", 25)
+    assert enabled == [0, 6, 12, 18, 24]
+
+
+def test_vit_l_16_transformer_blocks_exposes_all_encoder_boundaries():
+    """ViT-L/16 transformer_blocks exposes every encoder-block boundary."""
+    from src.integration.split_point_policy import get_enabled_boundaries
+
+    enabled = get_enabled_boundaries("vit_l_16", "transformer_blocks", 25)
+    assert enabled == list(range(25))
+
+
 def test_get_enabled_boundaries_unknown_model():
     """Unknown model falls back to all boundaries."""
     from src.integration.split_point_policy import get_enabled_boundaries

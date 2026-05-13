@@ -10,7 +10,8 @@ SS model:
   single   — no-split baseline (K=1 per task, all boundaries off)
   max      — max-split baseline (K=N per task, all boundaries on)
   tol      — tolerance-fit splitting (follows DNNSplitting RTA_SS_tol)
-  tol-fb   — tolerance-fit with fallback (follows RTA_SS_tol_fb)
+  tol-fb   — tolerance-fit with fallback + optimistic early stop
+  tol-fb-off — tolerance-fit with fallback, optimistic early stop disabled
   heu      — paper-style greedy: add one boundary at a time, pick best each round
   heu-k    — measured K-search greedy: increment K per lower task
   opt      — paper-style BFS-OPT: enumerate enabled-boundary subsets, min WCET
@@ -31,7 +32,7 @@ we call instead:
 which:
   1. enumerates every policy-allowed mask with exactly K chunks
   2. calls evaluate_mask() for each candidate (cache-first)
-  3. patches seg.G_block_list with MEASURED per-chunk p99 times
+  3. patches seg.G_block_list with MEASURED per-chunk max/WCET times
   4. returns MaskApplicationResult + updates profiling stats
 
 DNNSplitting analysis.py functions reused without modification:
@@ -102,6 +103,7 @@ from src.rta.analysis import (
     does_all_lower_meet_tolerance, find_splitting_target,
     update_SS_R_list_and_tolerance_list, update_UNI_R_list_and_tolerance_list,
     get_UNI_R_and_K, get_UNI_tolerance,
+    get_optimistic_SS_R, get_optimistic_UNI_R,
     get_max_lower_blocking,
     convert_task_SS_to_UNI, convert_task_list_to_SS, convert_task_list_to_UNI,
 )
@@ -137,6 +139,13 @@ class ProfilingStats:
     unique_mask_cache_hits: int = 0
     unique_skipped_masks: int = 0
     interval_timing_cache_hits: int = 0   # served from interval GPU timing (no re-profile)
+    k_split_calls: int = 0                # apply_k_chunks() invocations
+    k_split_cache_hits: int = 0           # best-K cache hits inside apply_k_chunks()
+    k_split_candidate_masks: int = 0      # total candidate masks implied by K-search
+    k_split_candidate_chunk_profiles: int = 0
+    k_split_candidate_inference_runs: int = 0
+    early_stop_optimistic_checks: int = 0
+    early_stop_optimistic_deadline_misses: int = 0
 
     # Private set-based tracking for unique-mask counters (excluded from to_dict repr)
     _seen_evaluated: set = field(default_factory=set, repr=False, compare=False)
@@ -242,6 +251,13 @@ class ProfilingStats:
             "unique_mask_cache_hits": self.unique_mask_cache_hits,
             "unique_skipped_masks": self.unique_skipped_masks,
             "interval_timing_cache_hits": self.interval_timing_cache_hits,
+            "k_split_calls": self.k_split_calls,
+            "k_split_cache_hits": self.k_split_cache_hits,
+            "k_split_candidate_masks": self.k_split_candidate_masks,
+            "k_split_candidate_chunk_profiles": self.k_split_candidate_chunk_profiles,
+            "k_split_candidate_inference_runs": self.k_split_candidate_inference_runs,
+            "early_stop_optimistic_checks": self.early_stop_optimistic_checks,
+            "early_stop_optimistic_deadline_misses": self.early_stop_optimistic_deadline_misses,
             "skipped_masks_detail": self._skipped_by_model,
             "total_interval_cache_hits": self.total_interval_cache_hits,
             "total_interval_cache_misses": self.total_interval_cache_misses,
@@ -284,7 +300,7 @@ class TaskResult:
 @dataclass
 class DNNAlgorithmResult:
     rta_model: str          # "SS" or "UNI"
-    algorithm: str          # "single","max","tol","tol-fb","heu","heu-k","opt","opt-k"
+    algorithm: str          # "single","max","tol","tol-fb","tol-fb-off","heu","heu-k","opt","opt-k"
     taskset_path: str
     precision: str
     wcet_metric: str
@@ -397,9 +413,9 @@ def _policy_max_chunks(dnn_task, seg, policy_name: str = "all") -> int:
 def run_dnn_rta_algorithm(
     dnn_taskset_path: str | Path,
     model: str,                     # "ss" or "uni"
-    algorithm: str,                 # "single","max","tol","tol-fb","heu","heu-k","opt","opt-k"
+    algorithm: str,                 # "single","max","tol","tol-fb","tol-fb-off","heu","heu-k","opt","opt-k"
     precision: str = "fp32",
-    wcet_metric: str = "p99",
+    wcet_metric: str = "max",
     use_cpp: bool = True,
     force_profile: bool = False,
     dry_run: bool = False,
@@ -447,8 +463,12 @@ def run_dnn_rta_algorithm(
     )
 
     # Load DNN tasks + build initial SegInfTask task_set
-    dnn_tasks = generate_dnn_taskset(dnn_taskset_path, overlay_evaluations=True,
-                                     allow_equal_wcet_fallback=allow_equal_wcet_fallback)
+    dnn_tasks = generate_dnn_taskset(
+        dnn_taskset_path,
+        overlay_evaluations=True,
+        allow_equal_wcet_fallback=allow_equal_wcet_fallback,
+        allow_missing_base_timing_for_live=not dry_run,
+    )
     task_set = build_task_set_dict(dnn_tasks)
 
     # Build task map: task.id (str) → (DNNBackedTask, SegInfTask)
@@ -616,21 +636,21 @@ def _dispatch_ss(
     elif alg == "tol":
         _run_ss_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations, policy_name)
     elif alg in ("tol_fb", "tolfb"):
-        _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterations, policy_name)
+        _run_ss_tol_fb(
+            sorted_task_list, task_map, result, eval_kwargs, max_iterations,
+            policy_name, early_stop=True,
+        )
+    elif alg in ("tol_fb_off", "tolfb_off", "tol_fb_no_es", "tol_fb_no_early_stop"):
+        _run_ss_tol_fb(
+            sorted_task_list, task_map, result, eval_kwargs, max_iterations,
+            policy_name, early_stop=False,
+        )
     elif alg == "heu":
-        if not allow_proactive_splitting and _paper_no_split_gate_ss(
-            sorted_task_list, task_map, result, eval_kwargs
-        ):
-            return
         _run_ss_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
                           policy_name, max_profiles)
     elif alg == "heu_k":
         _run_ss_heu_k(sorted_task_list, task_map, result, eval_kwargs, max_iterations, policy_name)
     elif alg == "opt":
-        if not allow_proactive_splitting and _paper_no_split_gate_ss(
-            sorted_task_list, task_map, result, eval_kwargs
-        ):
-            return
         _run_ss_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
                           policy_name, max_profiles, max_candidates)
     elif alg == "opt_k":
@@ -638,7 +658,7 @@ def _dispatch_ss(
     else:
         result.error = (
             f"Unknown SS algorithm: {algorithm!r}. "
-            f"Supported: single, max, tol, tol-fb, heu, heu-k, opt, opt-k"
+            f"Supported: single, max, tol, tol-fb, tol-fb-off, heu, heu-k, opt, opt-k"
         )
 
 
@@ -666,17 +686,9 @@ def _dispatch_uni(
     elif alg in ("tol_fb", "tolfb"):
         _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterations, policy_name)
     elif alg == "heu":
-        if not allow_proactive_splitting and _paper_no_split_gate_uni(
-            sorted_task_list, task_map, result, eval_kwargs
-        ):
-            return
         _run_uni_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
                            policy_name, max_profiles)
     elif alg == "opt":
-        if not allow_proactive_splitting and _paper_no_split_gate_uni(
-            sorted_task_list, task_map, result, eval_kwargs
-        ):
-            return
         _run_uni_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
                            policy_name, max_profiles, max_candidates)
     else:
@@ -710,7 +722,13 @@ def _paper_no_split_gate_ss(sorted_task_list, task_map, result, eval_kwargs) -> 
 
 
 def _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs) -> bool:
-    """Apply measured K=1 timing to every task before RTA consumes G values."""
+    """Apply measured K=1 timing to every task before RTA consumes G values.
+
+    K=1 is the all-zero mask: one merged interval int_0_(N-1).  It must use the
+    measured per_chunk_gpu_max_ms from that mask, not the dag_aligned_full base
+    chunk sum.  When live loading inserted placeholder base timing, failure here
+    is fatal because RTA must never consume placeholders.
+    """
     if getattr(result, "_measured_no_split_initialized", False):
         return True
     for st in sorted_task_list:
@@ -721,7 +739,35 @@ def _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwa
             result.error = r.error or f"K=1 measured timing failed for task {st.id}"
             result.schedulable = False
             return False
+    if not _assert_no_placeholder_timing_reaches_rta(sorted_task_list, task_map, result, "K=1 initialization"):
+        return False
     result._measured_no_split_initialized = True
+    return True
+
+
+def _assert_no_placeholder_timing_reaches_rta(sorted_task_list, task_map, result, context: str) -> bool:
+    """Reject analysis if metadata-only placeholder timing would feed RTA."""
+    for st in sorted_task_list:
+        dt, _ = task_map[str(st.id)]
+        if bool(getattr(dt, "base_timing_placeholder", False)) and not bool(
+            getattr(dt, "current_timing_measured", False)
+        ):
+            result.error = (
+                f"{context}: placeholder dag_aligned_full timing for task {dt.task_name} "
+                f"({dt.model_name}) was not replaced by measured mask timing"
+            )
+            result.schedulable = False
+            return False
+        for seg in getattr(st, "inference_segment_list", []):
+            if bool(getattr(seg, "_base_timing_placeholder", False)) and not bool(
+                getattr(seg, "_current_timing_measured", False)
+            ):
+                result.error = (
+                    f"{context}: placeholder segment timing for task {dt.task_name} "
+                    f"({dt.model_name}) was not replaced by measured mask timing"
+                )
+                result.schedulable = False
+                return False
     return True
 
 
@@ -754,16 +800,20 @@ def _run_ss_single(sorted_task_list, task_map, result, eval_kwargs):
         return
 
     R_list = []
-    schedulable = True
-    for i, st in enumerate(sorted_task_list):
-        R, B_hi, B_lo, I = get_SS_R(sorted_task_list, i, R_list)
-        R_list.append(R)
-        sched = R <= st.D
-        if not sched:
-            schedulable = False
-        result.task_results.append(_make_task_result(st, R, B_hi, B_lo, I, task_map))
 
-    result.schedulable = schedulable
+    # Analysis
+    for i in range(len(sorted_task_list)):
+        R_i, B_i_high, B_i_low, I_i = get_SS_R(sorted_task_list, i, R_list)
+        result.task_results.append(_make_task_result(
+            sorted_task_list[i], R_i, B_i_high, B_i_low, I_i, task_map
+        ))
+        if R_i > sorted_task_list[i].D:
+            result.schedulable = False
+            result.algorithm_iterations = 1
+            return
+        R_list.append(R_i)
+
+    result.schedulable = True
     result.algorithm_iterations = 1
 
 
@@ -771,26 +821,33 @@ def _run_ss_single(sorted_task_list, task_map, result, eval_kwargs):
 
 def _run_ss_max(sorted_task_list, task_map, result, eval_kwargs):
     """Apply K=N mask to all tasks, run SS RTA."""
-    for st in sorted_task_list:
-        dt, _ = task_map[str(st.id)]
-        r = apply_full_split_mask(dt, st, 0, **eval_kwargs)
-        result.stats.update(r)
-        if not r.success:
-            result.error = r.error or f"full-split measured timing failed for task {st.id}"
-            result.schedulable = False
-            return
+    # full splitting
+    for task in sorted_task_list:
+        for segment_idx in range(task.m - 1):
+            dt, _ = task_map[str(task.id)]
+            r = apply_full_split_mask(dt, task, segment_idx, **eval_kwargs)
+            result.stats.update(r)
+            if not r.success:
+                result.error = r.error or f"full-split measured timing failed for task {task.id}"
+                result.schedulable = False
+                return
+    if not _assert_no_placeholder_timing_reaches_rta(sorted_task_list, task_map, result, "SS max initialization"):
+        return
 
+    # Analysis
     R_list = []
-    schedulable = True
-    for i, st in enumerate(sorted_task_list):
-        R, B_hi, B_lo, I = get_SS_R(sorted_task_list, i, R_list)
-        R_list.append(R)
-        sched = R <= st.D
-        if not sched:
-            schedulable = False
-        result.task_results.append(_make_task_result(st, R, B_hi, B_lo, I, task_map))
+    for i in range(len(sorted_task_list)):
+        R_i, B_i_high, B_i_low, I_i = get_SS_R(sorted_task_list, i, R_list)
+        result.task_results.append(_make_task_result(
+            sorted_task_list[i], R_i, B_i_high, B_i_low, I_i, task_map
+        ))
+        if R_i > sorted_task_list[i].D:
+            result.schedulable = False
+            result.algorithm_iterations = 1
+            return
+        R_list.append(R_i)
 
-    result.schedulable = schedulable
+    result.schedulable = True
     result.algorithm_iterations = 1
 
 
@@ -816,86 +873,101 @@ def _run_ss_tol(sorted_task_list, task_map, result, eval_kwargs, max_iterations,
     if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
         return
 
-    n = len(sorted_task_list)
+    is_schedulable = True
+    profiling_count = 0
     R_list = []
-    tolerance_list = [math.inf] * n
-    schedulable = True
-    iterations = 0
+    tolerance_list = [math.inf for _ in range(len(sorted_task_list))]
 
-    for i in range(n):
+    for i in range(len(sorted_task_list)):
+        # Step 1: SS RTA
+        profiling_count += 1
         task_i = sorted_task_list[i]
-        C_i, G_i, D_i = task_i.C, task_i.G, task_i.D
-        is_last = (i == n - 1)
+        C_i = task_i.C
+        G_i = task_i.G
+        D_i = task_i.D
 
-        R_i, B_hi, B_lo, I_i = get_SS_R(sorted_task_list, i, R_list)
-        result.stats.masks_evaluated += 1  # RTA computation counts as one "probe"
+        R_i, B_i_high, B_i_low, I_i = get_SS_R(sorted_task_list, i, R_list)
 
-        tolerance_i = get_SS_tolerance(task_i, D_i, C_i, G_i, I_i, B_hi) if not is_last else math.inf
+        is_last_task = (i == len(sorted_task_list) - 1)
+
+        # Update tolerance
+        if not is_last_task:
+            tolerance_i = get_SS_tolerance(task_i, D_i, C_i, G_i, I_i, B_i_high)
+        else:
+            tolerance_i = math.inf
         tolerance_list[i] = tolerance_i
 
-        if R_i <= D_i:
+        if R_i <= D_i: # Current task meets deadline
             R_list.append(R_i)
             continue
 
-        # Need splitting
-        if is_last or tolerance_i <= 0:
-            schedulable = False
-            break
+        # Step 2: tolerance-fit splitting
+        target_tolerance = min(tolerance_list[: i+1])
+        if is_last_task or tolerance_i <= 0:
+            is_schedulable = False
+            result.schedulable = is_schedulable
+            result.algorithm_iterations = profiling_count
+            return
 
         meet_tolerance = False
-        while iterations < max_iterations:
-            iterations += 1
-            target_tol = min(tolerance_list[:i + 1])
+        while profiling_count < max_iterations:
+            target_tolerance = min(tolerance_list[: i+1])
 
-            if does_all_lower_meet_tolerance(sorted_task_list, i, target_tol):
+            # All lower tasks meet tolerance
+            if does_all_lower_meet_tolerance(sorted_task_list,i,target_tolerance):
                 meet_tolerance = True
                 break
 
-            split_target = find_splitting_target(sorted_task_list, i, target_tol)
+            # Find splitting target
+            split_target = find_splitting_target(sorted_task_list, i, target_tolerance)
+
+            # No more splitting target
             if split_target is None:
+                meet_tolerance = False
                 break
 
-            t_idx, s_idx, cur_n = split_target
-            dt, st = task_map[str(sorted_task_list[t_idx].id)]
-            if cur_n >= _policy_max_chunks(dt, st.inference_segment_list[s_idx], policy_name):
-                break
-            app_r = apply_k_chunks(
-                dt, st, s_idx, cur_n + 1, policy_name=policy_name,
-                search_stats=result.stats, **eval_kwargs
-            )
-            result.stats.update(app_r)
-            if not app_r.success:
+            # Apply splitting
+            target_task_index, target_segment_index, current_n = split_target
+            dt, st = task_map[str(sorted_task_list[target_task_index].id)]
+            if current_n >= _policy_max_chunks(dt, st.inference_segment_list[target_segment_index], policy_name):
+                is_split = False
+            else:
+                app_r = apply_k_chunks(
+                    dt, st, target_segment_index, current_n + 1, policy_name=policy_name,
+                    search_stats=result.stats, **eval_kwargs
+                )
+                result.stats.update(app_r)
+                is_split = app_r.success
+
+            # Not splitable
+            if not is_split:
+                meet_tolerance = False
                 break
 
-            R_list, new_tol = update_SS_R_list_and_tolerance_list(sorted_task_list, i)
-            tolerance_list[:i + 1] = new_tol
+            profiling_count += 1
+
+            # Update R_list and tolerance_list
+            R_list, new_tolerance_list = update_SS_R_list_and_tolerance_list(sorted_task_list, last_task_idx=i)
+            tolerance_list[: i + 1] = new_tolerance_list
 
         if not meet_tolerance:
-            schedulable = False
+            is_schedulable = False
+        else:
+            if len(R_list) <= i:
+                R_list.append(R_i)
 
-        if schedulable and len(R_list) <= i:
-            R_list.append(R_i)
-
-        if not schedulable:
+        # Detect not schedulable
+        if not is_schedulable:
             break
 
-    # Final RTA pass
-    final_R_list = []
-    for i, st in enumerate(sorted_task_list):
-        R, B_hi, B_lo, I = get_SS_R(sorted_task_list, i, final_R_list)
-        final_R_list.append(R)
-        if R > st.D:
-            schedulable = False
-        result.task_results.append(_make_task_result(st, R, B_hi, B_lo, I, task_map))
-
-    result.schedulable = schedulable
-    result.algorithm_iterations = iterations
+    result.schedulable = is_schedulable
+    result.algorithm_iterations = profiling_count
 
 
 # ── SS: tol-fb ────────────────────────────────────────────────────────────────
 
 def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterations,
-                   policy_name="all"):
+                   policy_name="all", early_stop=True):
     """
     DNN-aware SS-tol-fb.
 
@@ -903,30 +975,40 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
     boundaries are forced to 0.
 
     Follows DNNSplitting _RTA_SS_tol_fb_impl logic with DNN-aware split hook.
+    The `early_stop` flag toggles the optimistic-R stop check after fallback.
     Fallback: split the task with the largest max_G_block (excluding highest-priority).
     """
     if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
         return
 
-    n = len(sorted_task_list)
+    is_schedulable = True
+    profiling_count = 0
     R_list = []
-    tolerance_list = [math.inf] * n
-    schedulable = True
-    iterations = 0
+    tolerance_list = [math.inf for _ in range(len(sorted_task_list))]
 
     i = 0
-    while i < n and iterations < max_iterations:
+    while i < len(sorted_task_list) and profiling_count < max_iterations:
+        '''
+        # Step 1: SS RTA #####
+        '''
+        profiling_count += 1
         task_i = sorted_task_list[i]
-        C_i, G_i, D_i = task_i.C, task_i.G, task_i.D
-        is_last = (i == n - 1)
+        C_i = task_i.C
+        G_i = task_i.G
+        D_i = task_i.D
 
-        R_i, B_hi, B_lo, I_i = get_SS_R(sorted_task_list, i, R_list)
-        iterations += 1
+        R_i, B_i_high, B_i_low, I_i = get_SS_R(sorted_task_list, i, R_list)
 
-        tolerance_i = get_SS_tolerance(task_i, D_i, C_i, G_i, I_i, B_hi) if not is_last else math.inf
+        is_last_task = (i == len(sorted_task_list) - 1)
+
+        # Update tolerance
+        if not is_last_task:
+            tolerance_i = get_SS_tolerance(task_i, D_i, C_i, G_i, I_i, B_i_high)
+        else:
+            tolerance_i = math.inf
         tolerance_list[i] = tolerance_i
 
-        if R_i <= D_i:
+        if R_i <= D_i: # Current task meets deadline
             if len(R_list) <= i:
                 R_list.append(R_i)
             else:
@@ -934,38 +1016,55 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
             i += 1
             continue
 
+        '''
         # Step 2: tol-based splitting
+        '''
+
         meet_tolerance = False
-        while iterations < max_iterations:
-            target_tol = min(tolerance_list[:i + 1])
-            if is_last or tolerance_i <= 0:
+        while profiling_count < max_iterations:
+            # If invalid, go to fallback
+            target_tolerance = min(tolerance_list[: i+1])
+            if is_last_task or tolerance_i <= 0:
                 break
 
-            if does_all_lower_meet_tolerance(sorted_task_list, i, target_tol):
+            # All lower tasks meet tolerance
+            if does_all_lower_meet_tolerance(sorted_task_list,i,target_tolerance):
                 meet_tolerance = True
                 break
 
-            split_target = find_splitting_target(sorted_task_list, i, target_tol)
+            # Find splitting target
+            split_target = find_splitting_target(sorted_task_list, i, target_tolerance)
+
+            # No more splitting target
             if split_target is None:
+                meet_tolerance = False
                 break
 
-            t_idx, s_idx, cur_n = split_target
-            dt, st_target = task_map[str(sorted_task_list[t_idx].id)]
-            if cur_n >= _policy_max_chunks(
-                dt, st_target.inference_segment_list[s_idx], policy_name
+            # Apply splitting
+            target_task_index, target_segment_index, current_n = split_target
+            dt, st_target = task_map[str(sorted_task_list[target_task_index].id)]
+            if current_n >= _policy_max_chunks(
+                dt, st_target.inference_segment_list[target_segment_index], policy_name
             ):
-                break
-            app_r = apply_k_chunks(
-                dt, st_target, s_idx, cur_n + 1,
-                policy_name=policy_name, search_stats=result.stats, **eval_kwargs
-            )
-            iterations += 1
-            result.stats.update(app_r)
-            if not app_r.success:
+                is_split = False
+            else:
+                app_r = apply_k_chunks(
+                    dt, st_target, target_segment_index, current_n + 1,
+                    policy_name=policy_name, search_stats=result.stats, **eval_kwargs
+                )
+                result.stats.update(app_r)
+                is_split = app_r.success
+
+            # Not splitable
+            if not is_split:
+                meet_tolerance = False
                 break
 
-            R_list, new_tol = update_SS_R_list_and_tolerance_list(sorted_task_list, i)
-            tolerance_list[:i + 1] = new_tol
+            profiling_count += 1
+
+            # Update R_list and tolerance_list
+            R_list, new_tolerance_list = update_SS_R_list_and_tolerance_list(sorted_task_list, last_task_idx=i)
+            tolerance_list[: i + 1] = new_tolerance_list
 
         if meet_tolerance:
             if len(R_list) <= i:
@@ -973,44 +1072,72 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
             i += 1
             continue
 
-        # Step 3: fallback — split largest max_G_block (excluding task 0)
-        splitted, splitted_idx, app_r = _dnn_split_largest_excluding_highest(
+        '''
+        # Step 3: Fallback
+        '''
+        is_splitted, splitted_task_idx, app_r = _dnn_split_largest_excluding_highest(
             sorted_task_list, task_map, eval_kwargs, policy_name=policy_name,
             search_stats=result.stats,
         )
         if app_r is not None:
             result.stats.update(app_r)
-        if not splitted:
-            schedulable = False
+        if not is_splitted or splitted_task_idx is None:
+            is_schedulable = False
             break
-        iterations += 1
+        profiling_count += 1
 
-        restart_idx = i if i <= splitted_idx else splitted_idx
+        # Update task idx if splited task idx is higher
+        restart_idx = i if i <= splitted_task_idx else splitted_task_idx
 
+        # Update R_list and tolerance_list
         if R_list:
-            R_list, new_tol = update_SS_R_list_and_tolerance_list(
-                sorted_task_list, len(R_list) - 1
+            R_list, new_tolerance_list = update_SS_R_list_and_tolerance_list(
+                sorted_task_list, last_task_idx=(len(R_list)-1)
             )
-            tolerance_list[:len(new_tol)] = new_tol
+            tolerance_list[: len(new_tolerance_list)] = new_tolerance_list
         else:
             R_list = []
 
+        '''
+        # Step 4: Early stop
+        '''
+        if early_stop:
+            optimistic_R_list = get_optimistic_SS_R(sorted_task_list)
+            result.stats.early_stop_optimistic_checks += len(optimistic_R_list)
+            early_stop_hit = False
+            for k, R_k in enumerate(optimistic_R_list):
+                task_k = sorted_task_list[k]
+                if task_k.D < R_k:
+                    result.stats.early_stop_optimistic_deadline_misses += 1
+                    is_schedulable = False
+                    early_stop_hit = True
+                    break
+            if early_stop_hit:
+                break
+
+        # Detect not schedulable
+        if not is_schedulable:
+            break
+
+        # Reset target index
         i = restart_idx
 
-    if iterations >= max_iterations:
+    if profiling_count >= max_iterations:
         result.error = f"Max iterations ({max_iterations}) reached"
 
-    # Final RTA pass
+    result.algorithm_iterations = profiling_count
+
     final_R_list = []
     for i, st in enumerate(sorted_task_list):
-        R, B_hi, B_lo, I = get_SS_R(sorted_task_list, i, final_R_list)
-        final_R_list.append(R)
-        if R > st.D:
-            schedulable = False
-        result.task_results.append(_make_task_result(st, R, B_hi, B_lo, I, task_map))
+        R_i, B_i_high, B_i_low, I_i = get_SS_R(sorted_task_list, i, final_R_list)
+        final_R_list.append(R_i)
+        if R_i > st.D:
+            is_schedulable = False
+        result.task_results.append(_make_task_result(
+            st, R_i, B_i_high, B_i_low, I_i, task_map
+        ))
 
-    result.schedulable = schedulable
-    result.algorithm_iterations = iterations
+    result.schedulable = is_schedulable
 
 
 # ── SS: heu-k (measured K-search greedy) ─────────────────────────────────────
@@ -1341,6 +1468,9 @@ def _run_ss_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
             max_profiles=max_profiles,
         )
         iterations += search_result.profiles_used
+        if not search_result.found:
+            schedulable = False
+            break
 
         # Update R and tolerance
         R_list, tolerance_list = update_SS_R_list_and_tolerance_list(
@@ -1354,6 +1484,10 @@ def _run_ss_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
         final_R_list.append(R)
         if R > st.D:
             schedulable = False
+            result.task_results.append(_make_task_result(st, R, B_hi, B_lo, I, task_map))
+            result.schedulable = schedulable
+            result.algorithm_iterations = iterations
+            return
         result.task_results.append(_make_task_result(st, R, B_hi, B_lo, I, task_map))
 
     result.schedulable = schedulable
@@ -1450,6 +1584,9 @@ def _run_ss_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
             max_profiles=max_profiles, max_candidates=max_candidates,
         )
         iterations += search_result.profiles_used
+        if not search_result.found:
+            schedulable = False
+            break
 
         # Update R and tolerance
         R_list, tolerance_list = update_SS_R_list_and_tolerance_list(
@@ -1463,6 +1600,10 @@ def _run_ss_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
         final_R_list.append(R)
         if R > st.D:
             schedulable = False
+            result.task_results.append(_make_task_result(st, R, B_hi, B_lo, I, task_map))
+            result.schedulable = schedulable
+            result.algorithm_iterations = iterations
+            return
         result.task_results.append(_make_task_result(st, R, B_hi, B_lo, I, task_map))
 
     result.schedulable = schedulable
@@ -1517,6 +1658,8 @@ def _run_uni_max(sorted_task_list, task_map, result, eval_kwargs):
             result.error = r.error or f"full-split measured timing failed for task {st.id}"
             result.schedulable = False
             return
+    if not _assert_no_placeholder_timing_reaches_rta(sorted_task_list, task_map, result, "UNI max initialization"):
+        return
 
     uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
 
@@ -1558,29 +1701,38 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
     if not _apply_no_split_measured_to_all(sorted_task_list, task_map, result, eval_kwargs):
         return
 
-    # Build UNI task list
-    # We keep SS task list in parallel for TRT operations
-    uni_tasks = [convert_task_SS_to_UNI(deepcopy(st)) for st in sorted_task_list]
+    # Convert to unified resource model
+    uni_tasks = []
+    for task in sorted_task_list:
+        uni_tasks.append(convert_task_SS_to_UNI(deepcopy(task)))
 
-    n = len(uni_tasks)
-    R_list: list = []
-    tolerance_list = [math.inf] * n
-    schedulable = True
-    iterations = 0
+    is_schedulable = True
+    profiling_count = 0
+
+    R_list = []
+    tolerance_list = [math.inf for _ in range(len(uni_tasks))]
 
     i = 0
-    while i < n and iterations < max_iterations:
-        ut = uni_tasks[i]
-        D_i = ut.D
-        is_last = (i == n - 1)
+    while i < len(uni_tasks) and profiling_count < max_iterations:
+        '''
+        # Step 1: UNI RTA
+        '''
+        profiling_count += 1
 
+        task_i = uni_tasks[i]
+        D_i = task_i.D
         R_i, K_i = get_UNI_R_and_K(uni_tasks, i)
-        iterations += 1
 
-        tolerance_i = get_UNI_tolerance(uni_tasks, i, K_i) if not is_last else math.inf
+        is_last_task = (i == len(uni_tasks) - 1)
+
+        # Update tolerance
+        if not is_last_task:
+            tolerance_i = get_UNI_tolerance(uni_tasks, i, K_i)
+        else:
+            tolerance_i = math.inf
         tolerance_list[i] = tolerance_i
 
-        if R_i <= D_i:
+        if R_i <= D_i: # Current task meets deadline
             if len(R_list) <= i:
                 R_list.append(R_i)
             else:
@@ -1588,47 +1740,57 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
             i += 1
             continue
 
-        # Step 2: tol-based splitting in UNI space
+        '''
+        # Step 2: tolerance-fit splitting
+        '''
+
         meet_tolerance = False
-        while iterations < max_iterations:
-            target_tol = min(tolerance_list[:i + 1])
-            if is_last or tolerance_i <= 0:
+        while profiling_count < max_iterations:
+            # If invalid, go to fallback
+            target_tolerance = min(tolerance_list[: i+1])
+            if is_last_task or tolerance_i <= 0:
                 break
 
-            # Convert a copy to SS to check tolerance on max_G_block.  The
-            # canonical UNI state must keep measured TRT timings; converting the
-            # live UNI task back and forth reconstructs from base_block_list and
-            # can discard measured split timings.
-            ss_tasks_tmp = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
-            if does_all_lower_meet_tolerance(ss_tasks_tmp, i, target_tol):
+            # All lower tasks meet tolerance
+            ss_task_view = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
+            if does_all_lower_meet_tolerance(ss_task_view,i,target_tolerance):
                 meet_tolerance = True
                 break
 
-            split_target = find_splitting_target(ss_tasks_tmp, i, target_tol)
+            # Find splitting target
+            split_target = find_splitting_target(ss_task_view, i, target_tolerance)
+
+            # No more splitting target
             if split_target is None:
+                meet_tolerance = False
                 break
 
-            t_idx, s_idx, cur_n = split_target
-            dt, st_orig = task_map[str(sorted_task_list[t_idx].id)]
-            ut_target = uni_tasks[t_idx]
-            if cur_n >= _policy_max_chunks(
-                dt, st_orig.inference_segment_list[s_idx], policy_name
+            # Apply splitting
+            target_task_index, target_segment_index, current_n = split_target
+            dt, st_orig = task_map[str(sorted_task_list[target_task_index].id)]
+            if current_n >= _policy_max_chunks(
+                dt, st_orig.inference_segment_list[target_segment_index], policy_name
             ):
+                is_split = False
+            else:
+                app_r = _uni_apply_k_chunks(
+                    dt, st_orig, uni_tasks[target_task_index],
+                    target_segment_index, current_n + 1, eval_kwargs,
+                    policy_name=policy_name, search_stats=result.stats,
+                )
+                result.stats.update(app_r)
+                is_split = app_r.success
+
+            # Not splitable
+            if not is_split:
+                meet_tolerance = False
                 break
 
-            # DNN-aware UNI split: extract TRT mask for new K, evaluate, apply
-            new_k = cur_n + 1
-            app_r = _uni_apply_k_chunks(
-                dt, st_orig, ut_target, s_idx, new_k, eval_kwargs,
-                policy_name=policy_name, search_stats=result.stats,
-            )
-            iterations += 1
-            result.stats.update(app_r)
-            if not app_r.success:
-                break
+            profiling_count += 1
 
-            R_list, new_tol = update_UNI_R_list_and_tolerance_list(uni_tasks, i)
-            tolerance_list[:i + 1] = new_tol
+            # Update R_list and tolerance_list
+            R_list, new_tolerance_list = update_UNI_R_list_and_tolerance_list(uni_tasks, last_task_idx=i)
+            tolerance_list[: i + 1] = new_tolerance_list
 
         if meet_tolerance:
             if len(R_list) <= i:
@@ -1636,43 +1798,69 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
             i += 1
             continue
 
-        # Step 3: fallback
-        ss_tasks_fb = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
-        splitted, splitted_idx, app_r = _dnn_uni_split_largest_excluding_highest(
-            uni_tasks, ss_tasks_fb, sorted_task_list, task_map, eval_kwargs,
+        '''
+        # Step 3: Fallback
+        '''
+        ss_task_view = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
+        is_splitted, splitted_task_idx, app_r = _dnn_uni_split_largest_excluding_highest(
+            uni_tasks, ss_task_view, sorted_task_list, task_map, eval_kwargs,
             policy_name=policy_name, search_stats=result.stats,
         )
         if app_r is not None:
             result.stats.update(app_r)
-        if not splitted:
-            schedulable = False
+        if not is_splitted or splitted_task_idx is None:
+            is_schedulable = False
             break
-        iterations += 1
+        profiling_count += 1
 
-        restart_idx = i if i <= splitted_idx else splitted_idx
+        # Update task idx if splited task idx is higher
+        restart_idx = i if i <= splitted_task_idx else splitted_task_idx
+
+        # Update R_list and tolerance_list
         if R_list:
-            R_list, new_tol = update_UNI_R_list_and_tolerance_list(
-                uni_tasks, len(R_list) - 1
-            )
-            tolerance_list[:len(new_tol)] = new_tol
+            R_list, new_tolerance_list = update_UNI_R_list_and_tolerance_list(uni_tasks, last_task_idx=(len(R_list)-1))
+            tolerance_list[: len(new_tolerance_list)] = new_tolerance_list
         else:
             R_list = []
+
+        '''
+        # Step 4: Early stop
+        '''
+        optimistic_R_list = get_optimistic_UNI_R(uni_tasks)
+        for k in range(len(optimistic_R_list)):
+            task_k = uni_tasks[k]
+            D_k = task_k.D
+            R_k = optimistic_R_list[k]
+            if D_k < R_k:
+                is_schedulable = False
+                result.schedulable = is_schedulable
+                result.algorithm_iterations = profiling_count
+                return
+
+        # Detect not schedulable
+        if not is_schedulable:
+            break
+
+        # Reset target index
         i = restart_idx
 
-    if iterations >= max_iterations:
+    if profiling_count >= max_iterations:
         result.error = f"Max iterations ({max_iterations}) reached"
 
-    # Final RTA pass using UNI
+    # Final validation is required for the TensorRT-backed UNI bridge.  The
+    # tolerance loop can certify lower-priority blocking bounds while an already
+    # visited lower task still misses its own response-time deadline under the
+    # measured split timings.
     for i, ut in enumerate(uni_tasks):
         R_i, K_i = get_UNI_R_and_K(uni_tasks, i)
         if R_i > ut.D:
-            schedulable = False
+            is_schedulable = False
         result.task_results.append(_make_task_result_from_uni(
             ut, sorted_task_list[i], R_i, task_map
         ))
 
-    result.schedulable = schedulable
-    result.algorithm_iterations = iterations
+    result.schedulable = is_schedulable
+    result.algorithm_iterations = profiling_count
 
 
 # ── UNI: tol ─────────────────────────────────────────────────────────────────
@@ -1838,6 +2026,9 @@ def _run_uni_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
             max_profiles=max_profiles,
         )
         iterations += search_result.profiles_used
+        if not search_result.found:
+            schedulable = False
+            break
 
         # Sync: convert_task_list_to_UNI reads from SS tasks
         # (st_orig_i is already patched by _uni_apply_raw_mask)
@@ -1854,6 +2045,12 @@ def _run_uni_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
         R_i, K_i = get_UNI_R_and_K(uni_tasks, i)
         if R_i > ut.D:
             schedulable = False
+            result.task_results.append(_make_task_result_from_uni(
+                ut, sorted_task_list[i], R_i, task_map
+            ))
+            result.schedulable = schedulable
+            result.algorithm_iterations = iterations
+            return
         result.task_results.append(_make_task_result_from_uni(
             ut, sorted_task_list[i], R_i, task_map
         ))
@@ -1923,6 +2120,9 @@ def _run_uni_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
             max_profiles=max_profiles, max_candidates=max_candidates,
         )
         iterations += search_result.profiles_used
+        if not search_result.found:
+            schedulable = False
+            break
 
         # Rebuild uni_tasks[i] from patched st_orig_i
         uni_tasks[i] = convert_task_SS_to_UNI(deepcopy(st_orig_i))
@@ -1937,6 +2137,12 @@ def _run_uni_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
         R_i, K_i = get_UNI_R_and_K(uni_tasks, i)
         if R_i > ut.D:
             schedulable = False
+            result.task_results.append(_make_task_result_from_uni(
+                ut, sorted_task_list[i], R_i, task_map
+            ))
+            result.schedulable = schedulable
+            result.algorithm_iterations = iterations
+            return
         result.task_results.append(_make_task_result_from_uni(
             ut, sorted_task_list[i], R_i, task_map
         ))

@@ -31,6 +31,7 @@ def test_cache_miss_error_field(tmp_eval_dir):
     _write_eval_json(tmp_eval_dir, "alexnet", variant, "fp32", {
         "error": "ONNX export failed",
         "per_chunk_gpu_mean_ms": None,
+        "per_chunk_gpu_max_ms": None,
     })
     assert not is_mask_cached("alexnet", mask, "fp32")
 
@@ -41,7 +42,7 @@ def test_cache_miss_wrong_chunk_count(tmp_eval_dir):
     variant = mask_to_variant_name("alexnet", mask)
     _write_eval_json(tmp_eval_dir, "alexnet", variant, "fp32", {
         "error": None,
-        "per_chunk_gpu_mean_ms": [1.0, 2.0],  # wrong: should be 3 chunks
+        "per_chunk_gpu_max_ms": [1.0, 2.0],  # wrong: should be 3 chunks
     })
     assert not is_mask_cached("alexnet", mask, "fp32")
 
@@ -54,6 +55,8 @@ def test_cache_hit_valid(tmp_eval_dir):
     _write_eval_json(tmp_eval_dir, "alexnet", variant, "fp32", {
         "error": None,
         "per_chunk_gpu_mean_ms": [1.0, 2.0, 3.0],
+        "per_chunk_gpu_p99_ms": [1.1, 2.1, 3.1],
+        "per_chunk_gpu_max_ms": [1.2, 2.2, 3.2],
     })
     assert is_mask_cached("alexnet", mask, "fp32")
 

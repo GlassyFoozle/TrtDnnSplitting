@@ -264,8 +264,8 @@ def _print_summary(table4_paths: List[Path], precision: str) -> None:
     print("\n" + "=" * 60)
     print(f"Base chunk profiling summary ({precision.upper()})")
     print("=" * 60)
-    print(f"{'Model':<12}  {'N':>4}  {'sum_mean (ms)':>14}  {'sum_p99 (ms)':>13}")
-    print("-" * 52)
+    print(f"{'Model':<12}  {'N':>4}  {'sum_mean (ms)':>14}  {'sum_p99 (ms)':>13}  {'sum_max (ms)':>13}")
+    print("-" * 68)
     for p in table4_paths:
         if not p.exists():
             print(f"  {p.stem}: MISSING")
@@ -275,7 +275,11 @@ def _print_summary(table4_paths: List[Path], precision: str) -> None:
         chunks = data.get("chunks", [])
         mean_sum = sum(c["gpu_mean_ms"] for c in chunks)
         p99_sum  = sum(c["gpu_p99_ms"]  for c in chunks)
-        print(f"  {model:<12}  {len(chunks):>4}  {mean_sum:>14.4f}  {p99_sum:>13.4f}")
+        max_sum  = sum(c.get("gpu_max_ms", 0.0) for c in chunks)
+        print(
+            f"  {model:<12}  {len(chunks):>4}  "
+            f"{mean_sum:>14.4f}  {p99_sum:>13.4f}  {max_sum:>13.4f}"
+        )
     print()
     print("These values will now be used by scripts 30, 40, and 15.")
     print("Run scripts/15_compare_k1_timing_semantics.py to verify consistency.")

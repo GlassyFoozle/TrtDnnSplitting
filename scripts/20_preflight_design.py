@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--num-tasks", type=int, default=8)
     ap.add_argument("--utilization", type=float, default=0.6)
     ap.add_argument("--precision", default="fp32", choices=["fp32", "fp16"])
-    ap.add_argument("--wcet-metric", default="p99", choices=["p99", "mean"], dest="wcet_metric")
+    ap.add_argument("--wcet-metric", default="max", choices=["max", "p99", "mean"], dest="wcet_metric")
     ap.add_argument("--num-cpus", type=int, default=1)
     ap.add_argument("--num-tasks-per-cpu", type=int, default=None)
     ap.add_argument("--period-min-ms", type=float, default=1.0)

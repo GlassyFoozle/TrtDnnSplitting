@@ -5,6 +5,7 @@ Supported models:
   alexnet    — AlexNet (Krizhevsky 2012), torchvision
   resnet18   — ResNet18 (He 2016), torchvision
   vgg19      — VGG19 (Simonyan 2014), torchvision
+  vit_l_16   — Vision Transformer large, patch 16, torchvision
   vit / vit_b_16 — Vision Transformer base, patch 16, torchvision
                 (registry/full-model construction support only in this pass)
   inceptionv4 — NOT AVAILABLE: requires timm, which is not installed on this system
@@ -15,6 +16,7 @@ Supported models:
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
+import torch
 import torch.nn as nn
 import torchvision.models as tvm
 
@@ -26,6 +28,20 @@ class ModelInfo:
     input_shape: Tuple[int, ...]
     notes:       str
     available:   bool
+
+
+def _with_nonzero_classifier_head(model: nn.Module) -> nn.Module:
+    """Keep weights=None synthetic, but avoid all-zero classifier pruning."""
+    gen = torch.Generator()
+    gen.manual_seed(12345)
+    for module in model.modules():
+        if isinstance(module, nn.Linear) and module.out_features == 1000:
+            if float(module.weight.detach().abs().max()) == 0.0:
+                with torch.no_grad():
+                    module.weight.normal_(mean=0.0, std=0.02, generator=gen)
+                    if module.bias is not None:
+                        module.bias.zero_()
+    return model.eval()
 
 
 def _make_registry() -> dict:
@@ -51,9 +67,20 @@ def _make_registry() -> dict:
             notes="VGG19 (Simonyan 2014); 19-layer all-conv; ~138 M params",
             available=True,
         ),
+        "vit_l_16": ModelInfo(
+            name="vit_l_16",
+            constructor=lambda: _with_nonzero_classifier_head(tvm.vit_l_16(weights=None)),
+            input_shape=(1, 3, 224, 224),
+            notes=(
+                "Vision Transformer L/16, torchvision; 24 encoder blocks. "
+                "Classifier head is deterministically initialized when weights=None "
+                "to avoid TensorRT constant-output pruning."
+            ),
+            available=hasattr(tvm, "vit_l_16"),
+        ),
         "vit_b_16": ModelInfo(
             name="vit_b_16",
-            constructor=lambda: tvm.vit_b_16(weights=None).eval(),
+            constructor=lambda: _with_nonzero_classifier_head(tvm.vit_b_16(weights=None)),
             input_shape=(1, 3, 224, 224),
             notes=(
                 "Vision Transformer B/16, torchvision. Registry/full-model "

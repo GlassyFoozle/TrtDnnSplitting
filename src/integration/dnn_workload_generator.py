@@ -49,14 +49,16 @@ REPO = Path(__file__).resolve().parent.parent.parent
 _MODEL_N_CHUNKS: Dict[str, int] = {
     "alexnet":  22,
     "resnet18": 14,
+    "vit_l_16": 26,
     "vgg19":    46,
 }
 
-# Measured FP32 dag_aligned_full WCETs on Jetson AGX Orin (p99, ms).
+# Measured FP32 K=1 WCET references on Jetson AGX Orin (max/p99-era fallback, ms).
 # Used as final fallback in dry-run mode when no profiling cache is present.
 _DRY_RUN_BASE_WCET_MS: Dict[str, float] = {
     "alexnet":  1.754,
     "resnet18": 1.037,
+    "vit_l_16": 25.43,
     "vgg19":    7.562,
 }
 
@@ -86,7 +88,7 @@ def uunifast(n: int, u_total: float, rng: random.Random) -> List[float]:
 def _get_base_gpu_wcet_ms(
     model_name: str,
     precision: str = "fp32",
-    wcet_metric: str = "p99",
+    wcet_metric: str = "max",
     profiling_db=None,
     profile_missing_k1: bool = False,
     warmup: int = 20,
@@ -103,7 +105,11 @@ def _get_base_gpu_wcet_ms(
     dag_aligned_full chunk sums are intentionally not used here because they are
     split-candidate metadata, not measured K=1 execution time.
     """
-    metric_key = "per_chunk_gpu_p99_ms" if wcet_metric == "p99" else "per_chunk_gpu_mean_ms"
+    metric_key = (
+        "per_chunk_gpu_mean_ms"
+        if wcet_metric == "mean"
+        else "per_chunk_gpu_max_ms"
+    )
     model_key = model_name.lower()
 
     k1_value = _get_measured_k1_wcet_ms(model_key, precision, metric_key)
@@ -179,7 +185,9 @@ def _read_k1_wcet_from_eval_json(
     mask = data.get("mask")
     if mask != expected_mask:
         return None
-    times = data.get(metric_key) or data.get("per_chunk_gpu_mean_ms")
+    times = data.get(metric_key)
+    if metric_key == "per_chunk_gpu_mean_ms" and not times:
+        times = data.get("per_chunk_gpu_mean_ms")
     if times and len(times) == 1:
         return float(sum(times))
     return None
@@ -212,11 +220,11 @@ def _profile_missing_k1_wcet_ms(
     if getattr(result, "error", None):
         return None
     times = (
-        getattr(result, "per_chunk_gpu_p99_ms", None)
-        if wcet_metric == "p99"
-        else getattr(result, "per_chunk_gpu_mean_ms", None)
+        getattr(result, "per_chunk_gpu_mean_ms", None)
+        if wcet_metric == "mean"
+        else getattr(result, "per_chunk_gpu_max_ms", None)
     )
-    if not times:
+    if not times and wcet_metric == "mean":
         times = getattr(result, "per_chunk_gpu_mean_ms", None)
     if times and len(times) == 1:
         return float(sum(times))
@@ -246,7 +254,7 @@ class WorkloadConfig:
     utilization: float                          # total utilization (sum of U_i)
     n_tasksets: int = 10                        # how many tasksets to generate
     precision: str = "fp32"
-    wcet_metric: str = "p99"
+    wcet_metric: str = "max"
     cpu_pre_range: Tuple[float, float] = (0.0, 0.0)   # (min, max) ms
     cpu_post_range: Tuple[float, float] = (0.0, 0.0)  # (min, max) ms
     period_min_ms: float = 5.0                 # minimum task period
@@ -757,7 +765,7 @@ def _sample_int_range(
 def _estimate_base_wcet_from_metadata(model_name: str) -> Optional[float]:
     """
     Estimate K=1 WCET from dag_aligned_full profiling cache (mean metric).
-    Used as fallback when p99 is unavailable.
+    Used as fallback when max is unavailable.
     """
     cache_path = REPO / "results" / "optimization" / ".profiling_cache.json"
     try:
@@ -766,7 +774,7 @@ def _estimate_base_wcet_from_metadata(model_name: str) -> Optional[float]:
             key = f"{model_name.lower()}|dag_aligned_full|{precision}"
             entry = cache_data.get("entries", {}).get(key)
             if entry:
-                times = entry.get("per_chunk_gpu_mean_ms") or entry.get("per_chunk_gpu_p99_ms")
+                times = entry.get("per_chunk_gpu_max_ms") or entry.get("per_chunk_gpu_mean_ms")
                 if times:
                     return float(sum(times))
     except Exception:

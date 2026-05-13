@@ -2,7 +2,7 @@
   "name": "mixed_two_dnn_demo",
   "description": "Two DNN tasks on the same CPU: AlexNet (high priority, short period) and ResNet18 (lower priority, longer period). Designed to exercise interference terms in RTA. Both tasks share cpu_id=0.",
   "precision": "fp32",
-  "wcet_metric": "p99",
+  "wcet_metric": "max",
   "tasks": [
     {
       "task_name": "tau1_alexnet_hi",

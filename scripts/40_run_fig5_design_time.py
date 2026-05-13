@@ -96,7 +96,7 @@ def parse_args() -> argparse.Namespace:
              "main4={SS-tol-fb,UNI-tol-fb,SS-opt,UNI-opt}, full8=all 8 variants.",
     )
     ap.add_argument("--precision", default="fp32", choices=["fp32", "fp16"])
-    ap.add_argument("--wcet-metric", default="p99", choices=["p99", "mean"], dest="wcet_metric")
+    ap.add_argument("--wcet-metric", default="max", choices=["max", "p99", "mean"], dest="wcet_metric")
     ap.add_argument("--split-policy", default="five_points",
                     choices=["all", "paper_like", "stage", "five_points", "ten_points", "major_blocks"])
     ap.add_argument("--taskgen-mode", default="dnnsplitting", choices=["legacy", "dnnsplitting"])

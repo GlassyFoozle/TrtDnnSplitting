@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import csv
+import io
 import importlib.util
 import json
 import math
@@ -98,7 +100,19 @@ _ALGORITHM_SETS: Dict[str, List[AlgorithmSpec]] = {
         ("ss", "tol-fb", "SS-tol-fb"),
         ("uni", "heu",    "UNI-heu"),
         ("uni", "tol-fb", "UNI-tol-fb"),
-    ]
+    ],
+    "rtss": {
+        ("ss",  "opt",    "SS-opt"),
+        ("ss",  "heu",    "SS-heu"),
+        ("ss",  "tol-fb", "SS-tol-fb"),
+        ("uni", "opt",    "UNI-opt"),
+        ("uni", "heu",    "UNI-heu"),
+        ("uni", "tol-fb", "UNI-tol-fb"),
+    },
+    "tol_fb": {
+        ("ss",  "tol-fb", "SS-tol-fb"),
+        ("uni", "tol-fb", "UNI-tol-fb"),
+    }
 
 }
 # Backward-compatible alias kept for any external scripts that reference it.
@@ -124,14 +138,14 @@ def parse_args() -> argparse.Namespace:
         description="Run a YAML-driven Fig.4-style DNN schedulability experiment"
     )
     ap.add_argument("--config", required=True, help="DNNSplitting-style YAML config")
-    ap.add_argument("--models", nargs="+", default=["alexnet", "resnet18", "vgg19"])
+    ap.add_argument("--models", nargs="+", default=["alexnet", "resnet18", "vgg19", "vit_l_16"])
     ap.add_argument(
         "--split-policy",
         default="major_blocks",
         choices=["all", "paper_like", "stage", "five_points", "ten_points", "major_blocks"],
     )
     ap.add_argument("--precision", default="fp32", choices=["fp32", "fp16"])
-    ap.add_argument("--wcet-metric", default="p99", choices=["p99", "mean"], dest="wcet_metric")
+    ap.add_argument("--wcet-metric", default="max", choices=["max", "p99", "mean"], dest="wcet_metric")
     ap.add_argument("--dry-run", action="store_true", default=True)
     ap.add_argument("--live", action="store_true", default=False)
     ap.add_argument("--run-name", default=None)
@@ -178,6 +192,20 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         default=str(REPO / "results" / "dnn_experiments"),
         help="Base output directory; run output goes under <output-dir>/<run-name>",
+    )
+    ap.add_argument(
+        "--existing-taskset-root",
+        default=None,
+        help=(
+            "Use an existing generated_tasksets directory instead of generating new "
+            "tasksets. Expected layout: u0p70/taskset_000.json, ..."
+        ),
+    )
+    ap.add_argument(
+        "--verbose-evaluator",
+        action="store_true",
+        default=False,
+        help="Print evaluator cache/build messages verbosely instead of compact progress updates.",
     )
     ap.add_argument(
         "--algorithm-set",
@@ -424,6 +452,23 @@ def generate_yaml_tasksets(
     mapping: Dict[str, Any],
     out_dir: Path,
 ) -> List[TasksetEntry]:
+    if args.existing_taskset_root:
+        root = Path(args.existing_taskset_root)
+        if not root.is_absolute():
+            root = REPO / root
+        if not root.exists():
+            raise FileNotFoundError(f"existing taskset root not found: {root}")
+        entries: List[TasksetEntry] = []
+        for util in mapping["utilizations"]:
+            util_dir = root / util_dir_name(float(util))
+            paths = sorted(util_dir.glob("taskset_*.json"))
+            if not paths:
+                raise FileNotFoundError(f"no taskset_*.json under {util_dir}")
+            limit = int(mapping["num_tasksets_per_utilization"])
+            for path in paths[:limit]:
+                entries.append((float(util), path))
+        return entries
+
     root = out_dir / "generated_tasksets"
     root.mkdir(parents=True, exist_ok=True)
     entries: List[TasksetEntry] = []
@@ -562,6 +607,15 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_unique_mask_cache_hits": avg(items, "unique_mask_cache_hits"),
             "avg_unique_skipped_masks": avg(items, "unique_skipped_masks"),
             "avg_interval_timing_cache_hits": avg(items, "interval_timing_cache_hits"),
+            "avg_k_split_calls": avg(items, "k_split_calls"),
+            "avg_k_split_cache_hits": avg(items, "k_split_cache_hits"),
+            "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
+            "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
+            "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
+            "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
+            "avg_early_stop_optimistic_deadline_misses": avg(
+                items, "early_stop_optimistic_deadline_misses"
+            ),
             "avg_optimization_runtime_s": avg(items, "optimization_runtime_s"),
             "split_triggered_tasksets": split_sets,
             "split_triggered_pct": split_sets / n if n else 0.0,
@@ -583,6 +637,15 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_dry_run_evaluations": avg(items, "dry_run_evaluations"),
             "avg_cache_hits": avg(items, "cache_hits"),
             "avg_real_profiles": avg(items, "real_profiles"),
+            "avg_k_split_calls": avg(items, "k_split_calls"),
+            "avg_k_split_cache_hits": avg(items, "k_split_cache_hits"),
+            "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
+            "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
+            "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
+            "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
+            "avg_early_stop_optimistic_deadline_misses": avg(
+                items, "early_stop_optimistic_deadline_misses"
+            ),
         })
     return ratio_rows, split_rows
 
@@ -855,6 +918,53 @@ def write_run_config(
     (out_dir / "run_config.json").write_text(json.dumps(data, indent=2, sort_keys=True))
 
 
+def _compact_path(path: Path, max_len: int = 58) -> str:
+    text = str(path)
+    if len(text) <= max_len:
+        return text
+    return "..." + text[-(max_len - 3):]
+
+
+def _display_path(path: Path) -> Path:
+    try:
+        return path.relative_to(REPO)
+    except ValueError:
+        return path
+
+
+def _progress_bar(done: int, total: int, width: int = 28) -> str:
+    if total <= 0:
+        return "[" + "-" * width + "]"
+    filled = min(width, max(0, int(width * done / total)))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
+def _render_progress(
+    done: int,
+    total: int,
+    taskset_idx: int,
+    taskset_total: int,
+    util: float,
+    label: str,
+    status: str,
+    split: str,
+    masks: int,
+    cache_hits: int,
+    real_profiles: int,
+    path: Path,
+) -> None:
+    pct = 100.0 * done / total if total else 100.0
+    line = (
+        f"\r\033[K{_progress_bar(done, total)} {done:4d}/{total:<4d} "
+        f"{pct:5.1f}% | taskset {taskset_idx:3d}/{taskset_total:<3d} "
+        f"U={util:.2f} | {label:14s} {status:5s} {split:8s} "
+        f"masks={masks:4d} cache={cache_hits:4d} real={real_profiles:3d} | "
+        f"{_compact_path(path)}"
+    )
+    sys.stdout.write(line)
+    sys.stdout.flush()
+
+
 def main() -> int:
     args = parse_args()
     dry_run = not args.live
@@ -891,7 +1001,7 @@ def main() -> int:
     print(f"Algorithms: {[label for _, _, label in algorithm_list]}", flush=True)
     print(f"Utilizations: {mapping['utilizations']}", flush=True)
     print(f"Tasksets per U: {mapping['num_tasksets_per_utilization']}", flush=True)
-    print(f"Output: {out_dir.relative_to(REPO)}", flush=True)
+    print(f"Output: {_display_path(out_dir)}", flush=True)
 
     tasksets = generate_yaml_tasksets(args, mapping, out_dir)
     if not tasksets:
@@ -904,15 +1014,13 @@ def main() -> int:
     per_rows: List[Dict[str, Any]] = []
     all_results: List[Dict[str, Any]] = []
     start = time.time()
+    total_steps = len(tasksets) * len(algorithm_list)
+    completed_steps = 0
 
     for taskset_idx, (util, taskset_path) in enumerate(tasksets, start=1):
         initial_masks = load_initial_masks(taskset_path)
-        print(
-            f"\n[{taskset_idx}/{len(tasksets)}] {taskset_path.relative_to(REPO)}",
-            flush=True,
-        )
         for rta_model, algorithm, label in algorithm_list:
-            result = run_dnn_rta_algorithm(
+            run_kwargs = dict(
                 dnn_taskset_path=taskset_path,
                 model=rta_model,
                 algorithm=algorithm,
@@ -929,6 +1037,11 @@ def main() -> int:
                 allow_proactive_splitting=args.allow_proactive_splitting,
                 allow_equal_wcet_fallback=args.allow_equal_wcet_fallback,
             )
+            if args.verbose_evaluator:
+                result = run_dnn_rta_algorithm(**run_kwargs)
+            else:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = run_dnn_rta_algorithm(**run_kwargs)
             row = summarize_result(
                 util, taskset_path, rta_model, algorithm, label, result, initial_masks
             )
@@ -941,15 +1054,23 @@ def main() -> int:
             sched = "SCHED" if result.schedulable else "MISS"
             split = "split" if row["any_split_triggered"] else "no-split"
             error = " ERROR" if result.error else ""
-            print(
-                f"  {label:14s} {sched:5s} {split:8s} "
-                f"masks={result.stats.masks_evaluated:4d} "
-                f"dry={result.stats.dry_run_evaluations:4d} "
-                f"cache={result.stats.cache_hits:3d} "
-                f"real={result.stats.real_profiles:3d}{error}",
-                flush=True,
+            completed_steps += 1
+            _render_progress(
+                completed_steps,
+                total_steps,
+                taskset_idx,
+                len(tasksets),
+                util,
+                label,
+                sched + ("*" if error else ""),
+                split,
+                result.stats.masks_evaluated,
+                result.stats.cache_hits,
+                result.stats.real_profiles,
+                _display_path(taskset_path),
             )
             if live_budget is not None and live_budget.stopped:
+                print()
                 print(
                     f"[live_budget] stopped on first build: "
                     f"{live_budget.stop_model}/{live_budget.stop_variant}",
@@ -958,6 +1079,7 @@ def main() -> int:
                 break
         if live_budget is not None and live_budget.stopped:
             break
+    print()
 
     ratio_rows, split_rows = aggregate(per_rows)
 
@@ -968,6 +1090,9 @@ def main() -> int:
         "masks_evaluated", "dry_run_evaluations", "real_profiles", "cache_hits",
         "skipped_cache_misses", "unique_masks_evaluated", "unique_mask_cache_hits",
         "unique_skipped_masks", "interval_timing_cache_hits",
+        "k_split_calls", "k_split_cache_hits", "k_split_candidate_masks",
+        "k_split_candidate_chunk_profiles", "k_split_candidate_inference_runs",
+        "early_stop_optimistic_checks", "early_stop_optimistic_deadline_misses",
         "gpu_util", "cpu_util", "total_util",
         "max_cpu_partition_util", "actual_g_ratio_min", "actual_g_ratio_max",
         "actual_g_ratio_avg", "actual_period_min_ms", "actual_period_max_ms",
@@ -986,7 +1111,11 @@ def main() -> int:
         "avg_dry_run_evaluations", "avg_cache_hits", "avg_real_profiles",
         "avg_skipped_cache_misses", "avg_unique_masks_evaluated",
         "avg_unique_mask_cache_hits", "avg_unique_skipped_masks",
-        "avg_interval_timing_cache_hits", "avg_optimization_runtime_s",
+        "avg_interval_timing_cache_hits", "avg_k_split_calls",
+        "avg_k_split_cache_hits", "avg_k_split_candidate_masks",
+        "avg_k_split_candidate_chunk_profiles", "avg_k_split_candidate_inference_runs",
+        "avg_early_stop_optimistic_checks", "avg_early_stop_optimistic_deadline_misses",
+        "avg_optimization_runtime_s",
         "split_triggered_tasksets", "split_triggered_pct",
     ]
     split_fields = [
@@ -995,7 +1124,10 @@ def main() -> int:
         "avg_final_active_boundaries", "avg_final_chunks",
         "disabled_active_boundaries", "policy_violation_count",
         "avg_masks_evaluated", "avg_dry_run_evaluations", "avg_cache_hits",
-        "avg_real_profiles",
+        "avg_real_profiles", "avg_k_split_calls", "avg_k_split_cache_hits",
+        "avg_k_split_candidate_masks", "avg_k_split_candidate_chunk_profiles",
+        "avg_k_split_candidate_inference_runs", "avg_early_stop_optimistic_checks",
+        "avg_early_stop_optimistic_deadline_misses",
     ]
 
     write_csv(out_dir / "per_taskset_results.csv", per_rows, per_fields)
@@ -1008,9 +1140,9 @@ def main() -> int:
     )
 
     elapsed = time.time() - start
-    print(f"\nSaved: {(out_dir / 'schedulability_ratio.csv').relative_to(REPO)}")
-    print(f"Saved: {(out_dir / 'yaml_mapping_report.md').relative_to(REPO)}")
-    print(f"Saved: {(out_dir / 'summary.md').relative_to(REPO)}")
+    print(f"\nSaved: {_display_path(out_dir / 'schedulability_ratio.csv')}")
+    print(f"Saved: {_display_path(out_dir / 'yaml_mapping_report.md')}")
+    print(f"Saved: {_display_path(out_dir / 'summary.md')}")
     print(f"Elapsed algorithm time: {elapsed:.2f}s")
     print(f"Result rows with errors: {sum(1 for r in per_rows if r.get('error'))}")
     print(f"Policy violations: {sum(1 for r in per_rows if r.get('policy_violation'))}")

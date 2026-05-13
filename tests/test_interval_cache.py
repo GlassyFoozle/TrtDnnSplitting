@@ -65,6 +65,45 @@ def test_interval_timing_roundtrip(monkeypatch, tmp_path):
     assert timing["build_fp32_wall_s"] == pytest.approx(5.0)
 
 
+def test_parse_cpp_result_preserves_max_fields(tmp_path):
+    """C++ table4 JSON parsing keeps max timing fields for recording/caching."""
+    from src.optimization.config_evaluator import _parse_cpp_result
+
+    p = tmp_path / "table4.json"
+    p.write_text(json.dumps({
+        "full_engine_gpu_mean_ms": 1.0,
+        "full_engine_gpu_p99_ms": 1.2,
+        "full_engine_gpu_max_ms": 1.4,
+        "total_chunked_gpu_mean_ms": 2.0,
+        "total_chunked_gpu_p99_ms": 2.2,
+        "total_chunked_gpu_max_ms": 2.5,
+        "chunks": [
+            {
+                "gpu_mean_ms": 0.7,
+                "gpu_p99_ms": 0.8,
+                "gpu_max_ms": 0.9,
+                "cpu_mean_ms": 0.71,
+                "cpu_p99_ms": 0.81,
+                "cpu_max_ms": 0.91,
+            },
+            {
+                "gpu_mean_ms": 1.3,
+                "gpu_p99_ms": 1.4,
+                "gpu_max_ms": 1.6,
+                "cpu_mean_ms": 1.31,
+                "cpu_p99_ms": 1.41,
+                "cpu_max_ms": 1.61,
+            },
+        ],
+    }))
+
+    parsed = _parse_cpp_result(p)
+    assert parsed["full_gpu_max_ms"] == pytest.approx(1.4)
+    assert parsed["chunked_gpu_max_ms"] == pytest.approx(2.5)
+    assert parsed["per_chunk_gpu_max_ms"] == pytest.approx([0.9, 1.6])
+    assert parsed["per_chunk_cpu_wall_max_ms"] == pytest.approx([0.91, 1.61])
+
+
 # ── Cold-cache estimation ─────────────────────────────────────────────────────
 
 def test_estimate_cold_cost_no_data(monkeypatch, tmp_path):

@@ -436,7 +436,13 @@ def get_UNI_R_and_K(sorted_task_list, i):
 
     # response time
     f_i_k_list = [s_i_k + C_i_last for s_i_k in s_i_k_list]
-    R_i = max(f_i_k_list)
+
+    R_i_candidates = []
+    for _k in range(K_i):
+        k = _k + 1
+        f_i_k = f_i_k_list[_k]
+        R_i_candidates.append(f_i_k - (k - 1) * T_i)
+    R_i = max(R_i_candidates)
     
     # Return R_i and K_i
     return R_i, K_i

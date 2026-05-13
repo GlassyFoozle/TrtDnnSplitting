@@ -7,7 +7,7 @@ Usage:
       --model ss \\
       --algorithm tol-fb \\
       --precision fp32 \\
-      --wcet-metric p99 \\
+      --wcet-metric max \\
       --use-cpp
 
 Examples:
@@ -66,9 +66,9 @@ def main():
                     help="Algorithm (default: tol-fb). "
                          "heu/opt = paper-style; heu-k/opt-k = K-balanced approximation")
     ap.add_argument("--precision", default="fp32", choices=["fp32", "fp16"])
-    ap.add_argument("--wcet-metric", default="p99", choices=["p99", "mean"],
+    ap.add_argument("--wcet-metric", default="max", choices=["max", "p99", "mean"],
                     dest="wcet_metric",
-                    help="Per-chunk timing column to use for RTA (default: p99)")
+                    help="Per-chunk timing column to use for RTA (default: max; p99 aliases max)")
     ap.add_argument("--use-cpp", action="store_true", default=True,
                     help="Use C++ table4_runner for profiling (default: True)")
     ap.add_argument("--no-cpp", dest="use_cpp", action="store_false",

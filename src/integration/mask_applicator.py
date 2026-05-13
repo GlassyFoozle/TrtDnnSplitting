@@ -12,13 +12,15 @@ Key design:
   - dry_run=True cannot produce schedulability timing; it returns success=False.
 
 Per-chunk timing column:
-  wcet_metric="p99"  → per_chunk_gpu_p99_ms  (default, conservative)
-  wcet_metric="mean" → per_chunk_gpu_mean_ms  (optimistic)
+  wcet_metric="max"  → per_chunk_gpu_max_ms  (default WCET)
+  wcet_metric="p99"  → deprecated alias for max in analysis paths
+  wcet_metric="mean" → per_chunk_gpu_mean_ms (development-only optimistic path)
 """
 
 from __future__ import annotations
 
 import json
+import math
 from itertools import combinations
 import sys
 from dataclasses import dataclass, field
@@ -37,10 +39,15 @@ if TYPE_CHECKING:
 
 def _select_measured_chunk_times(eval_result, wcet_metric: str) -> List[float]:
     """Return measured per-chunk GPU timing from an EvaluationResult."""
-    if wcet_metric == "p99":
-        chunk_times = eval_result.per_chunk_gpu_p99_ms or []
+    metric = (wcet_metric or "max").lower()
+    if metric in ("max", "p99"):
+        chunk_times = eval_result.per_chunk_gpu_max_ms or []
         if chunk_times:
             return list(chunk_times)
+        if metric == "p99":
+            legacy = eval_result.per_chunk_gpu_p99_ms or []
+            if legacy:
+                return list(legacy)
     return list(eval_result.per_chunk_gpu_mean_ms or [])
 
 
@@ -97,7 +104,7 @@ def evaluate_and_apply_mask(
     segment_idx: int = 0,
     *,
     precision: str = "fp32",
-    wcet_metric: str = "p99",   # "p99" or "mean"
+    wcet_metric: str = "max",   # "max" or "mean"; "p99" is a deprecated alias
     use_cpp: bool = True,
     force: bool = False,
     dry_run: bool = False,
@@ -115,7 +122,7 @@ def evaluate_and_apply_mask(
     seg_task    : SegInfTask whose inference_segment_list[segment_idx] will be updated.
     mask        : binary list of length N-1 (dag_aligned_full boundaries).
     segment_idx : which InferenceSegment to update (always 0 for single-segment tasks).
-    wcet_metric : "p99" (conservative) or "mean" (optimistic).
+    wcet_metric : "max" (WCET/default) or "mean" (optimistic); "p99" aliases max.
     dry_run     : ask evaluator for a plan only; no timing is applied.
 
     Returns
@@ -144,6 +151,40 @@ def evaluate_and_apply_mask(
             error="dry_run does not provide measured per-chunk timing",
         )
 
+    # Cache order for live/evaluation mode:
+    #   1. exact mask EvaluationResult JSON (handled by evaluate_mask below),
+    #   2. interval timing cache assembly,
+    #   3. live export/build/profile.
+    if not force:
+        from src.optimization.config_evaluator import (
+            is_mask_cached, can_assemble_from_intervals, assemble_from_intervals,
+        )
+        if (
+            not is_mask_cached(dnn_task.model_name, mask, precision)
+            and can_assemble_from_intervals(dnn_task.model_name, mask, precision)
+        ):
+            assembled = assemble_from_intervals(dnn_task.model_name, mask, precision)
+            if assembled.ok():
+                chunk_times = _select_measured_chunk_times(assembled, wcet_metric)
+                if chunk_times and len(chunk_times) == k:
+                    _patch_seg_task(seg_task, seg, mask, chunk_times, segment_idx)
+                    dnn_task.current_chunk_times_ms = list(chunk_times)
+                    dnn_task.current_timing_measured = True
+                    dnn_task.selected_variant_name = assembled.variant_name
+                    dnn_task.profile_result_path = assembled.result_json_path
+                    return MaskApplicationResult(
+                        success=True,
+                        mask=list(mask),
+                        k_chunks=k,
+                        cache_hit=True,
+                        interval_timing_cache_hit=True,
+                        selected_chunk_times=list(chunk_times),
+                        max_block=max(chunk_times),
+                        total_gpu=sum(chunk_times),
+                        variant_name=assembled.variant_name,
+                        profile_result_path=assembled.result_json_path,
+                    )
+
     # ── live budget pre-check (real eval only) ────────────────────────────────
     live_cache_miss_variant = ""
     if live_budget is not None:
@@ -162,13 +203,11 @@ def evaluate_and_apply_mask(
                         dnn_task.model_name, mask, precision
                     )
                     if assembled.ok():
-                        if wcet_metric == "p99":
-                            chunk_times = assembled.per_chunk_gpu_p99_ms or []
-                        else:
-                            chunk_times = assembled.per_chunk_gpu_mean_ms or []
+                        chunk_times = _select_measured_chunk_times(assembled, wcet_metric)
                         if chunk_times and len(chunk_times) == k:
                             _patch_seg_task(seg_task, seg, mask, chunk_times, segment_idx)
                             dnn_task.current_chunk_times_ms = list(chunk_times)
+                            dnn_task.current_timing_measured = True
                             dnn_task.selected_variant_name = assembled.variant_name
                             # Count as interval timing cache hit (not skip)
                             return MaskApplicationResult(
@@ -262,6 +301,7 @@ def evaluate_and_apply_mask(
 
     # Update DNNBackedTask metadata
     dnn_task.current_chunk_times_ms = list(chunk_times)
+    dnn_task.current_timing_measured = True
     dnn_task.selected_variant_name = eval_result.variant_name
     dnn_task.selected_config_path = eval_result.config_path
     dnn_task.profile_result_path = eval_result.result_json_path
@@ -364,12 +404,29 @@ def apply_k_chunks(
         else list(range(boundary_count))
     )
     actual_k = max(1, min(int(k), len(enabled) + 1))
+    cut_count = actual_k - 1
+    candidate_count = (
+        math.comb(len(enabled), cut_count)
+        if 0 <= cut_count <= len(enabled)
+        else 0
+    )
+    candidate_chunk_profiles = candidate_count * actual_k
+    warmup = int(kwargs.get("warmup", 20) or 0)
+    iters = int(kwargs.get("iters", 200) or 0)
+
+    if search_stats is not None:
+        search_stats.k_split_calls += 1
+        search_stats.k_split_candidate_masks += candidate_count
+        search_stats.k_split_candidate_chunk_profiles += candidate_chunk_profiles
+        search_stats.k_split_candidate_inference_runs += (
+            candidate_chunk_profiles * (warmup + iters)
+        )
 
     force = bool(kwargs.get("force", False))
     cache_key = _k_split_cache_key(
         model_name=dnn_task.model_name,
         precision=str(kwargs.get("precision", getattr(dnn_task, "precision", "fp32"))),
-        wcet_metric=str(kwargs.get("wcet_metric", getattr(dnn_task, "wcet_metric", "p99"))),
+        wcet_metric=str(kwargs.get("wcet_metric", getattr(dnn_task, "wcet_metric", "max"))),
         policy_name=policy_name,
         boundary_count=boundary_count,
         enabled_boundaries=enabled,
@@ -378,6 +435,8 @@ def apply_k_chunks(
     if use_k_split_cache and not dry_run and not force:
         cached_mask = _load_cached_k_split_mask(cache_key, boundary_count, actual_k, enabled)
         if cached_mask is not None:
+            if search_stats is not None:
+                search_stats.k_split_cache_hits += 1
             cached_result = evaluate_and_apply_mask(
                 dnn_task, seg_task, cached_mask, segment_idx,
                 dry_run=dry_run, **kwargs
@@ -439,7 +498,7 @@ def apply_k_chunks(
             cache_key,
             model_name=dnn_task.model_name,
             precision=str(kwargs.get("precision", getattr(dnn_task, "precision", "fp32"))),
-            wcet_metric=str(kwargs.get("wcet_metric", getattr(dnn_task, "wcet_metric", "p99"))),
+            wcet_metric=str(kwargs.get("wcet_metric", getattr(dnn_task, "wcet_metric", "max"))),
             policy_name=policy_name,
             boundary_count=boundary_count,
             enabled_boundaries=enabled,
@@ -623,6 +682,7 @@ def _patch_seg_task(seg_task, seg, mask, chunk_times, segment_idx):
     SegInfTask.G and max_G_block are recomputed.
     """
     seg.splitting_config = list(mask)
+    seg._current_timing_measured = True
     # Override G_block_list directly — do NOT call _compute_block_list().
     # This preserves real measured timing.
     seg.G_block_list = list(chunk_times)

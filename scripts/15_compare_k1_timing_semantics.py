@@ -24,6 +24,7 @@ sys.path.insert(0, str(REPO))
 
 MODELS = ["alexnet", "resnet18", "vgg19"]
 PRECISION = "fp32"
+WCET_METRIC = "max"
 
 def _gen_g_source(model: str, precision: str) -> str:
     """Return a human-readable string describing where _get_base_gpu_wcet_ms got its value."""
@@ -66,8 +67,8 @@ def main() -> int:
     rows = []
     for model in MODELS:
         cs = load_candidate_space(model, PRECISION)
-        gen_g = _get_base_gpu_wcet_ms(model, PRECISION, "p99")
-        dag_sum = sum(cs.chunk_gpu_p99_ms)
+        gen_g = _get_base_gpu_wcet_ms(model, PRECISION, WCET_METRIC)
+        dag_sum = sum(cs.chunk_gpu_max_ms)
         n = cs.candidate_count
         if gen_g is None:
             all_has_gen = False
@@ -125,10 +126,10 @@ def main() -> int:
     for model in MODELS:
         cs = load_candidate_space(model, PRECISION)
         total_mean = sum(cs.chunk_gpu_mean_ms)
-        total_p99 = sum(cs.chunk_gpu_p99_ms)
+        total_max = sum(cs.chunk_gpu_max_ms)
         print(f"  {model}  N={cs.candidate_count}  has_timing={cs.has_timing}")
-        print(f"    sum_mean={total_mean:.4f}ms  sum_p99={total_p99:.4f}ms")
-        print(f"    per-chunk p99: [{', '.join(f'{t:.4f}' for t in cs.chunk_gpu_p99_ms[:5])}"
+        print(f"    sum_mean={total_mean:.4f}ms  sum_max={total_max:.4f}ms")
+        print(f"    per-chunk max: [{', '.join(f'{t:.4f}' for t in cs.chunk_gpu_max_ms[:5])}"
               f"{'...' if cs.candidate_count > 5 else ''}]")
         print()
 

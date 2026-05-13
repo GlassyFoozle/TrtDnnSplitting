@@ -10,8 +10,9 @@ Key design choices:
   - per_splitting_overhead = 0.0: base_chunk_times_ms are measured per-chunk
     GPU times; overhead is already captured in measurements.
   - wcet_metric selects which timing column drives analysis:
-      "p99"  → gpu_p99_ms  (conservative, default)
-      "mean" → gpu_mean_ms (optimistic)
+      "max"  → gpu_max_ms  (WCET/default)
+      "p99"  → deprecated alias for max in analysis paths
+      "mean" → gpu_mean_ms (development-only optimistic path)
 """
 
 from __future__ import annotations
@@ -49,9 +50,11 @@ class DNNBackedTask:
     profile_result_path: str     # path to EvaluationResult JSON
 
     # --- Timing data (from TRT profiling) ---
-    wcet_metric: str             # "p99" or "mean"
+    wcet_metric: str             # "max" or "mean"; "p99" aliases max
     base_chunk_times_ms: List[float]   # per-chunk GPU times for dag_aligned_full
     current_chunk_times_ms: List[float]  # per-chunk GPU times for selected config
+    base_timing_placeholder: bool = False
+    current_timing_measured: bool = False
 
     # --- Optional notes ---
     notes: str = ""
@@ -124,6 +127,8 @@ class DNNBackedTask:
             "wcet_metric": self.wcet_metric,
             "base_chunk_times_ms": self.base_chunk_times_ms,
             "current_chunk_times_ms": self.current_chunk_times_ms,
+            "base_timing_placeholder": self.base_timing_placeholder,
+            "current_timing_measured": self.current_timing_measured,
             "notes": self.notes,
         }
 

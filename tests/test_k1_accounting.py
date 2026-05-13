@@ -104,6 +104,7 @@ def _fake_eval_result(*, chunk_times, cache_hit=False, profiled=True, error=None
         build_wall_s=0.0,
         profile_wall_s=0.0,
         estimated_cold_total_s=None,
+        per_chunk_gpu_max_ms=list(chunk_times),
         per_chunk_gpu_p99_ms=list(chunk_times),
         per_chunk_gpu_mean_ms=list(chunk_times),
         variant_name="fake",

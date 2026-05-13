@@ -32,6 +32,7 @@ def generate_dnn_taskset(
     profiling_db=None,
     overlay_evaluations: bool = True,
     allow_equal_wcet_fallback: bool = False,
+    allow_missing_base_timing_for_live: bool = False,
 ) -> List[DNNBackedTask]:
     """
     Generate a list of DNNBackedTask from a taskset JSON spec.
@@ -47,13 +48,17 @@ def generate_dnn_taskset(
     allow_equal_wcet_fallback : bool
         Passed to load_candidate_space; enables equal-weight WCET/N fallback for
         development/CI use when profiling data is missing.
+    allow_missing_base_timing_for_live : bool
+        Passed to load_candidate_space; enables metadata-only live loading with
+        placeholder base timing.
 
     Returns
     -------
     list of DNNBackedTask
     """
     tasks = load_dnn_taskset(taskset_path, profiling_db=profiling_db,
-                             allow_equal_wcet_fallback=allow_equal_wcet_fallback)
+                             allow_equal_wcet_fallback=allow_equal_wcet_fallback,
+                             allow_missing_base_timing_for_live=allow_missing_base_timing_for_live)
 
     if overlay_evaluations:
         for task in tasks:
@@ -82,13 +87,14 @@ def _try_overlay_evaluation(task: DNNBackedTask) -> None:
         data = json.loads(eval_path.read_text())
         metric = task.wcet_metric
 
-        if metric == "p99":
-            per_chunk = data.get("per_chunk_gpu_p99_ms")
-        else:
+        if metric == "mean":
             per_chunk = data.get("per_chunk_gpu_mean_ms")
+        else:
+            per_chunk = data.get("per_chunk_gpu_max_ms")
 
         if per_chunk and len(per_chunk) > 0:
             task.current_chunk_times_ms = list(per_chunk)
+            task.current_timing_measured = True
             # Update profile_result_path to this file
             task.profile_result_path = str(eval_path)
     except Exception:
@@ -112,10 +118,10 @@ def update_task_with_evaluation(
         data = json.loads(eval_path.read_text())
         metric = task.wcet_metric
 
-        if metric == "p99":
-            per_chunk = data.get("per_chunk_gpu_p99_ms")
-        else:
+        if metric == "mean":
             per_chunk = data.get("per_chunk_gpu_mean_ms")
+        else:
+            per_chunk = data.get("per_chunk_gpu_max_ms")
 
         if not per_chunk:
             return False
@@ -125,6 +131,7 @@ def update_task_with_evaluation(
         config_path = data.get("config_path", task.selected_config_path)
 
         task.current_chunk_times_ms = list(per_chunk)
+        task.current_timing_measured = True
         task.profile_result_path = str(eval_path)
         if mask:
             task.initial_mask = list(mask)

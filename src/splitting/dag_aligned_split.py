@@ -72,6 +72,46 @@ class _Identity(nn.Module):
         return x
 
 
+class _ViTPatchClassPos(nn.Module):
+    """ViT image patch projection, class token prepend, positional add, dropout."""
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        self.conv_proj = model.conv_proj
+        self.class_token = model.class_token
+        self.pos_embedding = model.encoder.pos_embedding
+        self.dropout = model.encoder.dropout
+        self.image_size = model.image_size
+        self.patch_size = model.patch_size
+        self.hidden_dim = model.hidden_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        n, _, h, w = x.shape
+        torch._assert(h == self.image_size, "Wrong image height")
+        torch._assert(w == self.image_size, "Wrong image width")
+        n_h = h // self.patch_size
+        n_w = w // self.patch_size
+        x = self.conv_proj(x)
+        x = x.reshape(n, self.hidden_dim, n_h * n_w)
+        x = x.permute(0, 2, 1)
+        batch_class_token = self.class_token.expand(n, -1, -1)
+        x = torch.cat([batch_class_token, x], dim=1)
+        x = x + self.pos_embedding
+        return self.dropout(x)
+
+
+class _ViTFinalNormHead(nn.Module):
+    """ViT final encoder norm, class-token select, classifier head."""
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        self.ln = model.encoder.ln
+        self.heads = model.heads
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.ln(x)
+        x = x[:, 0]
+        return self.heads(x)
+
+
 def _infer_output_shape(module: nn.Module, input_shape: Shape) -> Shape:
     module.eval()
     device, dtype = _module_device_dtype(module)
@@ -345,9 +385,62 @@ def _resnet18_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
     return specs
 
 
+def _vit_l_16_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
+    """
+    ViT-L/16 split universe.
+
+    Base chunks follow architecture-defined transformer units:
+      0       patch projection + class token + positional embedding
+      1..24   encoder.layers.encoder_layer_{0..23}
+      25      final encoder norm + class-token classifier head
+
+    Splitting inside an encoder block is intentionally avoided because MHSA,
+    MLP, residual adds, and layer norms form a coupled semantic unit.
+    """
+    chunks: List[tuple[str, nn.Module, str, List[str], List[str], str, str, str]] = []
+    chunks.append((
+        "patch_class_pos",
+        _ViTPatchClassPos(model),
+        "conv_proj+class_token+pos_embedding",
+        ["conv_proj", "class_token", "encoder_pos_embedding", "encoder_dropout"],
+        ["conv_proj", "class_token", "encoder.pos_embedding", "encoder.dropout"],
+        "ViTPatchClassPos",
+        "ViT tokenization boundary before transformer encoder blocks",
+        "Includes patch projection, class token prepend, positional embedding add, and eval-mode dropout.",
+    ))
+
+    for i, block in enumerate(model.encoder.layers):
+        target = f"encoder.layers.encoder_layer_{i}"
+        fx = f"encoder_layer_{i}"
+        chunks.append((
+            fx,
+            _SingleModule(block),
+            f"{target}/EncoderBlock",
+            [fx],
+            [target],
+            "EncoderBlock",
+            "ViT transformer encoder block boundary; block internals remain grouped",
+            "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+        ))
+
+    chunks.append((
+        "final_norm_head",
+        _ViTFinalNormHead(model),
+        "encoder.ln+class_token_select+heads",
+        ["encoder_ln", "getitem_class_token", "heads"],
+        ["encoder.ln", "heads"],
+        "ViTFinalNormHead",
+        "ViT classifier boundary after the final transformer encoder block",
+        "Applies final norm, selects class token, and runs the classifier head.",
+    ))
+
+    return _execute_chain_specs(chunks, (1, 3, 224, 224))
+
+
 _DAG_ALIGNED_CHUNKERS: dict[str, Callable[[nn.Module], List[DagAlignedChunkSpec]]] = {
     "alexnet": _alexnet_dag_aligned,
     "resnet18": _resnet18_dag_aligned,
+    "vit_l_16": _vit_l_16_dag_aligned,
     "vgg19": _vgg19_dag_aligned,
 }
 

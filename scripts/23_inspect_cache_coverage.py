@@ -79,7 +79,11 @@ def _interval_has_gpu_timing(model: str, group: list, precision: str) -> bool:
         t = json.loads(t_path.read_text())
     except Exception:
         return False
-    return bool(t.get(f"gpu_mean_ms_{precision}") and t.get(f"gpu_p99_ms_{precision}"))
+    return bool(
+        t.get(f"gpu_mean_ms_{precision}")
+        and t.get(f"gpu_p99_ms_{precision}")
+        and t.get(f"gpu_max_ms_{precision}")
+    )
 
 
 def _is_mask_cached(model: str, mask: list, precision: str) -> bool:
@@ -138,7 +142,11 @@ def interval_timing_coverage(precision: str) -> dict:
             if t_path.exists():
                 try:
                     t = json.loads(t_path.read_text())
-                    if t.get(f"gpu_mean_ms_{precision}") and t.get(f"gpu_p99_ms_{precision}"):
+                    if (
+                        t.get(f"gpu_mean_ms_{precision}")
+                        and t.get(f"gpu_p99_ms_{precision}")
+                        and t.get(f"gpu_max_ms_{precision}")
+                    ):
                         has_gpu += 1
                         continue
                 except Exception:

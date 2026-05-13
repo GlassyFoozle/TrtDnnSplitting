@@ -178,12 +178,14 @@ PipelineResult ChunkPipeline::run(int n_warmup, int n_iters) {
         double sum = 0; for (auto v : full_gpu_ms) sum += v;
         res.full_engine_gpu_mean_ms = sum / full_gpu_ms.size();
         res.full_engine_gpu_p99_ms  = _percentile(full_gpu_ms, 99.0);
+        res.full_engine_gpu_max_ms  = *std::max_element(full_gpu_ms.begin(), full_gpu_ms.end());
     }
 
     {
         double sum = 0; for (auto v : total_gpu) sum += v;
         res.total_chunked_gpu_mean_ms = sum / total_gpu.size();
         res.total_chunked_gpu_p99_ms  = _percentile(total_gpu, 99.0);
+        res.total_chunked_gpu_max_ms  = *std::max_element(total_gpu.begin(), total_gpu.end());
     }
 
     for (size_t c = 0; c < n_chunks; ++c) {
@@ -196,6 +198,8 @@ PipelineResult ChunkPipeline::run(int n_warmup, int n_iters) {
         cs.cpu_mean_ms = cs2 / chunk_cpu[c].size();
         cs.gpu_p99_ms  = _percentile(chunk_gpu[c], 99.0);
         cs.cpu_p99_ms  = _percentile(chunk_cpu[c], 99.0);
+        cs.gpu_max_ms  = *std::max_element(chunk_gpu[c].begin(), chunk_gpu[c].end());
+        cs.cpu_max_ms  = *std::max_element(chunk_cpu[c].begin(), chunk_cpu[c].end());
         res.chunks.push_back(cs);
     }
 

@@ -79,8 +79,8 @@ def test_split_config_uses_interval_paths():
 
 def test_assemble_from_intervals(monkeypatch, tmp_path):
     """
-    When all interval timing.json files contain gpu_mean_ms_fp32 and
-    gpu_p99_ms_fp32, can_assemble_from_intervals returns True and
+    When all interval timing.json files contain gpu_mean_ms_fp32,
+    gpu_p99_ms_fp32, and gpu_max_ms_fp32, can_assemble_from_intervals returns True and
     assemble_from_intervals returns a valid EvaluationResult.
     """
     monkeypatch.setattr("src.optimization.config_evaluator.REPO", tmp_path)
@@ -97,9 +97,9 @@ def test_assemble_from_intervals(monkeypatch, tmp_path):
 
     # Write GPU timing into each interval
     timing_data = [
-        {"gpu_mean_ms_fp32": 0.10, "gpu_p99_ms_fp32": 0.12},
-        {"gpu_mean_ms_fp32": 0.20, "gpu_p99_ms_fp32": 0.22},
-        {"gpu_mean_ms_fp32": 0.30, "gpu_p99_ms_fp32": 0.33},
+        {"gpu_mean_ms_fp32": 0.10, "gpu_p99_ms_fp32": 0.12, "gpu_max_ms_fp32": 0.15},
+        {"gpu_mean_ms_fp32": 0.20, "gpu_p99_ms_fp32": 0.22, "gpu_max_ms_fp32": 0.25},
+        {"gpu_mean_ms_fp32": 0.30, "gpu_p99_ms_fp32": 0.33, "gpu_max_ms_fp32": 0.36},
     ]
     for grp, td in zip(groups, timing_data):
         _save_interval_timing("alexnet", grp, td)
@@ -122,6 +122,8 @@ def test_assemble_from_intervals(monkeypatch, tmp_path):
     assert result.per_chunk_gpu_p99_ms[1] == pytest.approx(0.22)
     assert result.per_chunk_gpu_p99_ms[2] == pytest.approx(0.33)
     assert result.chunked_gpu_p99_ms == pytest.approx(sum([0.12, 0.22, 0.33]))
+    assert result.per_chunk_gpu_max_ms == pytest.approx([0.15, 0.25, 0.36])
+    assert result.chunked_gpu_max_ms == pytest.approx(sum([0.15, 0.25, 0.36]))
 
 
 def test_assemble_from_intervals_missing_timing(monkeypatch, tmp_path):

@@ -10,6 +10,7 @@ Stored per entry:
   full_gpu_mean_ms      float | null
   per_chunk_gpu_mean_ms list[float] | null
   per_chunk_gpu_p99_ms  list[float] | null
+  per_chunk_gpu_max_ms  list[float] | null
   total_chunked_gpu_mean_ms float | null
   source_json           str   (path to the C++ or Python result JSON)
   timestamp             str
@@ -89,7 +90,10 @@ class ProfilingDB:
         full_gpu_mean_ms: Optional[float] = None,
         per_chunk_gpu_mean_ms: Optional[List[float]] = None,
         per_chunk_gpu_p99_ms: Optional[List[float]] = None,
+        per_chunk_gpu_max_ms: Optional[List[float]] = None,
         total_chunked_gpu_mean_ms: Optional[float] = None,
+        total_chunked_gpu_max_ms: Optional[float] = None,
+        full_gpu_max_ms: Optional[float] = None,
         source_json: str = "",
     ) -> None:
         key = self.make_key(model, variant, precision)
@@ -98,9 +102,12 @@ class ProfilingDB:
             "variant": variant,
             "precision": precision,
             "full_gpu_mean_ms": full_gpu_mean_ms,
+            "full_gpu_max_ms": full_gpu_max_ms,
             "per_chunk_gpu_mean_ms": per_chunk_gpu_mean_ms,
             "per_chunk_gpu_p99_ms": per_chunk_gpu_p99_ms,
+            "per_chunk_gpu_max_ms": per_chunk_gpu_max_ms,
             "total_chunked_gpu_mean_ms": total_chunked_gpu_mean_ms,
+            "total_chunked_gpu_max_ms": total_chunked_gpu_max_ms,
             "source_json": source_json,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
@@ -134,17 +141,25 @@ class ProfilingDB:
             return False
 
         full_mean = d.get("full_engine_gpu_mean_ms")
+        full_max = d.get("full_engine_gpu_max_ms")
         chunks = d.get("chunks", [])
         per_chunk = [c["gpu_mean_ms"] for c in chunks] if chunks else None
         per_chunk_p99 = [c["gpu_p99_ms"] for c in chunks] if chunks else None
+        per_chunk_max = [c["gpu_max_ms"] for c in chunks if "gpu_max_ms" in c] if chunks else None
+        if per_chunk_max is not None and len(per_chunk_max) != len(chunks):
+            per_chunk_max = None
         total = d.get("total_chunked_gpu_mean_ms")
+        total_max = d.get("total_chunked_gpu_max_ms")
 
         self.put(
             model, variant, precision,
             full_gpu_mean_ms=full_mean,
+            full_gpu_max_ms=full_max,
             per_chunk_gpu_mean_ms=per_chunk,
             per_chunk_gpu_p99_ms=per_chunk_p99,
+            per_chunk_gpu_max_ms=per_chunk_max,
             total_chunked_gpu_mean_ms=total,
+            total_chunked_gpu_max_ms=total_max,
             source_json=str(p),
         )
         return True

@@ -18,6 +18,9 @@ from typing import Dict, List, Optional, Set, Tuple
 
 REPO = Path(__file__).resolve().parent.parent
 _PLOTS_DIR = REPO / "results" / "plots"
+_FIGURE_SIZE_IN = (7.0, 4.68)
+_PIL_FIGURE_SIZE_PX = (1400, 936)
+_X_AXIS_LABEL = "Total utilization U"
 
 # ── Render order (lower index = front of legend) ─────────────────────────────
 _ORDER_MAIN6 = [
@@ -200,7 +203,7 @@ def plot_with_matplotlib(
     order = render_order(series, plot_mode)
 
     def _draw(include_legend: bool):
-        fig, ax = plt.subplots(figsize=(6.6, 6.6))
+        fig, ax = plt.subplots(figsize=_FIGURE_SIZE_IN)
         for label in order:
             points = series.get(label, [])
             if not points:
@@ -224,8 +227,8 @@ def plot_with_matplotlib(
                 label=legend_label(label),
                 zorder=style.get("zorder", 3),
             )
-        ax.set_xlabel("Utilization", fontsize=24)
-        ax.set_ylabel("Schedulability Ratio", fontsize=24)
+        ax.set_xlabel(_X_AXIS_LABEL, fontsize=24)
+        ax.set_ylabel("Schedulability ratio", fontsize=24)
         ax.tick_params(axis="both", which="major", labelsize=24)
         ax.grid(True, linestyle=(0, (5, 4)), linewidth=1.4, alpha=0.7)
         ax.set_xlim(xlim)
@@ -265,7 +268,7 @@ def plot_with_pillow(
     """Minimal fallback used only if matplotlib is unavailable."""
     from PIL import Image, ImageDraw
 
-    width, height = 1100, 720
+    width, height = _PIL_FIGURE_SIZE_PX
     margin_l, margin_r, margin_t, margin_b = 90, 260, 70, 90
     img = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(img)
@@ -285,7 +288,7 @@ def plot_with_pillow(
     draw.line([(margin_l, margin_t), (margin_l, height - margin_b)], fill="black", width=2)
     draw.line([(margin_l, height - margin_b), (width - margin_r, height - margin_b)], fill="black", width=2)
     draw.text((margin_l, 25), title, fill="black")
-    draw.text((width // 2 - 200, height - 35), "Total U across CPUs", fill="black")
+    draw.text((width // 2 - 200, height - 35), _X_AXIS_LABEL, fill="black")
     draw.text((10, height // 2), "Schedulability Ratio", fill="black")
 
     _pil_colors = {

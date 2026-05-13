@@ -103,13 +103,16 @@ int main(int argc, char** argv) {
 
     // Print summary.
     std::cerr << "\n  full engine GPU mean = " << res.full_engine_gpu_mean_ms << " ms"
-              << "  p99 = " << res.full_engine_gpu_p99_ms << " ms\n";
+              << "  p99 = " << res.full_engine_gpu_p99_ms << " ms"
+              << "  max = " << res.full_engine_gpu_max_ms << " ms\n";
     std::cerr << "  chunked total GPU mean = " << res.total_chunked_gpu_mean_ms << " ms"
-              << "  p99 = " << res.total_chunked_gpu_p99_ms << " ms\n";
+              << "  p99 = " << res.total_chunked_gpu_p99_ms << " ms"
+              << "  max = " << res.total_chunked_gpu_max_ms << " ms\n";
     for (auto& c : res.chunks) {
         std::cerr << "  chunk" << c.id
                   << "  GPU mean=" << c.gpu_mean_ms << " ms"
-                  << "  p99=" << c.gpu_p99_ms << " ms\n";
+                  << "  p99=" << c.gpu_p99_ms << " ms"
+                  << "  max=" << c.gpu_max_ms << " ms\n";
     }
 
     // Build output JSON.
@@ -118,11 +121,14 @@ int main(int argc, char** argv) {
     out["variant"]                      = variant;
     out["precision"]                    = args.precision;
     out["n_chunks"]                     = n_chunks;
+    out["n_warmup"]                     = args.warmup;
     out["n_iters"]                      = res.n_iters;
     out["full_engine_gpu_mean_ms"]      = res.full_engine_gpu_mean_ms;
     out["full_engine_gpu_p99_ms"]       = res.full_engine_gpu_p99_ms;
+    out["full_engine_gpu_max_ms"]       = res.full_engine_gpu_max_ms;
     out["total_chunked_gpu_mean_ms"]    = res.total_chunked_gpu_mean_ms;
     out["total_chunked_gpu_p99_ms"]     = res.total_chunked_gpu_p99_ms;
+    out["total_chunked_gpu_max_ms"]     = res.total_chunked_gpu_max_ms;
 
     nlohmann::json chunk_arr = nlohmann::json::array();
     for (auto& c : res.chunks) {
@@ -130,8 +136,10 @@ int main(int argc, char** argv) {
         ch["id"]          = c.id;
         ch["gpu_mean_ms"] = c.gpu_mean_ms;
         ch["gpu_p99_ms"]  = c.gpu_p99_ms;
+        ch["gpu_max_ms"]  = c.gpu_max_ms;
         ch["cpu_mean_ms"] = c.cpu_mean_ms;
         ch["cpu_p99_ms"]  = c.cpu_p99_ms;
+        ch["cpu_max_ms"]  = c.cpu_max_ms;
         chunk_arr.push_back(ch);
     }
     out["chunks"] = chunk_arr;

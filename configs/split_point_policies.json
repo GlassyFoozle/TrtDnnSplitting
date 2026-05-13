@@ -85,5 +85,26 @@
     "_notes": {
       "major_blocks": "Placeholder. ViT registry support exists, but dag_aligned_full chunk materialization is pending transformer-specific wrappers."
     }
+  },
+
+  "vit_l_16": {
+    "_N": 26,
+    "_boundaries": 25,
+    "all":        [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24],
+    "paper_like": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24],
+    "stage":      [0,6,12,18,24],
+    "five_points": [0,6,12,18,24],
+    "ten_points":  [0,3,6,9,12,15,18,21,23,24],
+    "major_blocks": [0,6,12,18,24],
+    "transformer_blocks": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24],
+    "_notes": {
+      "all": "All 25 architecture-defined ViT boundaries enabled.",
+      "paper_like": "Same as all: dag_aligned_full already avoids unsafe splits inside transformer encoder blocks.",
+      "stage": "Coarse ViT stages: after tokenization, after encoder blocks 5/11/17, and before final norm/head.",
+      "five_points": "Five coarse design-phase boundaries matching stage.",
+      "ten_points": "Ten materializable ViT boundaries sampled across the 24 encoder blocks plus final head.",
+      "major_blocks": "Patch/class/position prep, four groups of six encoder blocks, and final norm/head.",
+      "transformer_blocks": "All encoder block boundaries; recommended after compile compatibility is confirmed."
+    }
   }
 }

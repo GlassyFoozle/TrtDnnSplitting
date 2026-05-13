@@ -10,7 +10,7 @@ JSON format (configs/dnn_tasksets/*.json):
   "name": "...",
   "description": "...",            # optional
   "precision": "fp32",
-  "wcet_metric": "p99",            # "p99" or "mean"; default "p99"
+  "wcet_metric": "max",            # "max" or "mean"; "p99" aliases max
   "tasks": [
     {
       "task_name": "tau1_alexnet",
@@ -100,6 +100,7 @@ def load_dnn_taskset(
     path: str | Path,
     profiling_db=None,
     allow_equal_wcet_fallback: bool = False,
+    allow_missing_base_timing_for_live: bool = False,
 ) -> List[DNNBackedTask]:
     """
     Load a DNN taskset JSON and return a list of DNNBackedTask objects.
@@ -115,6 +116,11 @@ def load_dnn_taskset(
     allow_equal_wcet_fallback : bool
         If True, fall back to equal-weight WCET/N when profiling data is missing
         (development/CI use only). Default False raises RuntimeError.
+    allow_missing_base_timing_for_live : bool
+        If True, allow dag_aligned_full metadata without canonical singleton/base
+        timing. Positive placeholder timing is inserted only to preserve the
+        mask/boundary structure; live measured K=1 or split timing must patch it
+        before RTA consumes G values.
 
     Returns
     -------
@@ -134,7 +140,7 @@ def load_dnn_taskset(
         )
 
     precision = raw.get("precision", "fp32")
-    wcet_metric = raw.get("wcet_metric", "p99")
+    wcet_metric = raw.get("wcet_metric", "max")
 
     tasks: List[DNNBackedTask] = []
     for spec in raw["tasks"]:
@@ -144,7 +150,8 @@ def load_dnn_taskset(
         # Load candidate space for timing data
         try:
             cs = load_candidate_space(model_name, precision, profiling_db,
-                                      allow_equal_wcet_fallback=allow_equal_wcet_fallback)
+                                      allow_equal_wcet_fallback=allow_equal_wcet_fallback,
+                                      allow_missing_timing_for_live=allow_missing_base_timing_for_live)
         except FileNotFoundError as exc:
             raise FileNotFoundError(
                 f"[{task_name}] {exc}\n"
@@ -155,10 +162,10 @@ def load_dnn_taskset(
         boundary_count = cs.boundary_count
 
         # Select timing column
-        if wcet_metric == "p99":
-            base_chunk_times = cs.chunk_gpu_p99_ms
-        else:
+        if wcet_metric == "mean":
             base_chunk_times = cs.chunk_gpu_mean_ms
+        else:
+            base_chunk_times = cs.chunk_gpu_max_ms
 
         # Build initial_mask
         if "initial_mask" in spec:
@@ -201,6 +208,8 @@ def load_dnn_taskset(
             wcet_metric=wcet_metric,
             base_chunk_times_ms=list(base_chunk_times),
             current_chunk_times_ms=list(current_chunk_times),
+            base_timing_placeholder=bool(cs.timing_is_placeholder),
+            current_timing_measured=False,
             notes=spec.get("notes", ""),
         )
         tasks.append(dt)

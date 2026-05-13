@@ -10,15 +10,19 @@ struct ChunkStats {
     int    id          = 0;
     double gpu_mean_ms = 0.0;
     double gpu_p99_ms  = 0.0;
+    double gpu_max_ms  = 0.0;
     double cpu_mean_ms = 0.0;
     double cpu_p99_ms  = 0.0;
+    double cpu_max_ms  = 0.0;
 };
 
 struct PipelineResult {
     double              full_engine_gpu_mean_ms    = 0.0;
     double              full_engine_gpu_p99_ms     = 0.0;
+    double              full_engine_gpu_max_ms     = 0.0;
     double              total_chunked_gpu_mean_ms  = 0.0;
     double              total_chunked_gpu_p99_ms   = 0.0;
+    double              total_chunked_gpu_max_ms   = 0.0;
     int                 n_iters                    = 0;
     std::vector<ChunkStats> chunks;
 };

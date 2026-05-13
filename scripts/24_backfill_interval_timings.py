@@ -1,9 +1,9 @@
 """
 24_backfill_interval_timings.py — Populate interval timing.json GPU fields from eval JSONs.
 
-Reads results/evaluations/**/*_fp32.json (or fp16), extracts per_chunk_gpu_mean_ms
-and per_chunk_gpu_p99_ms from each eval record, and writes them back to the matching
-interval timing.json files in artifacts/chunk_cache/.
+Reads results/evaluations/**/*_fp32.json (or fp16), extracts per_chunk_gpu_mean_ms,
+per_chunk_gpu_p99_ms, and per_chunk_gpu_max_ms from each eval record, and writes
+them back to the matching interval timing.json files in artifacts/chunk_cache/.
 
 This allows cache-only assembly (can_assemble_from_intervals) to work for masks whose
 intervals were built and profiled in a prior live run, but whose interval timing.json
@@ -78,8 +78,8 @@ def main():
         print(f"  Found {len(eval_jsons)} eval JSONs for {precision}")
 
         # Collect per-interval GPU timing data from all eval JSONs
-        # A group (e.g. [0,1,2]) → (mean_ms, p99_ms) from the eval record's chunk data
-        interval_data: dict[str, tuple[float, float]] = {}  # int_key → (mean, p99)
+        # A group (e.g. [0,1,2]) → (mean_ms, p99_ms, max_ms) from eval chunk data.
+        interval_data: dict[str, tuple[float, float, float | None]] = {}
 
         for eval_path in eval_jsons:
             try:
@@ -91,6 +91,7 @@ def main():
                 continue
             means = d.get("per_chunk_gpu_mean_ms")
             p99s  = d.get("per_chunk_gpu_p99_ms")
+            maxs  = d.get("per_chunk_gpu_max_ms") or []
             groups = d.get("groups")
             if not (means and p99s and groups):
                 continue
@@ -100,7 +101,11 @@ def main():
             for i, grp in enumerate(groups):
                 int_key = f"int_{grp[0]}_{grp[-1]}"
                 if int_key not in interval_data:
-                    interval_data[int_key] = (float(means[i]), float(p99s[i]))
+                    interval_data[int_key] = (
+                        float(means[i]),
+                        float(p99s[i]),
+                        float(maxs[i]) if i < len(maxs) and maxs[i] is not None else None,
+                    )
                 # If already set, keep the first (deterministic — same interval should give same timing)
 
         # Write back to interval timing.json files
@@ -109,7 +114,7 @@ def main():
             print(f"  No chunk_cache dir for {model} — skipping")
             continue
 
-        for int_key, (mean_ms, p99_ms) in sorted(interval_data.items()):
+        for int_key, (mean_ms, p99_ms, max_ms) in sorted(interval_data.items()):
             int_dir = cache_model_dir / int_key
             if not int_dir.exists():
                 if args.verbose:
@@ -127,26 +132,37 @@ def main():
 
             mean_key = f"gpu_mean_ms_{precision}"
             p99_key  = f"gpu_p99_ms_{precision}"
+            max_key  = f"gpu_max_ms_{precision}"
 
-            if timing.get(mean_key) and timing.get(p99_key):
+            if timing.get(mean_key) and timing.get(p99_key) and timing.get(max_key):
                 total_intervals_already_ok += 1
                 if args.verbose:
                     print(f"    {int_key}: already has GPU timing ({timing[mean_key]:.4f} ms)")
                 continue
 
             if args.dry_run:
-                print(f"    [dry-run] {int_key}: would write {mean_key}={mean_ms:.4f}, {p99_key}={p99_ms:.4f}")
+                max_part = f", {max_key}={max_ms:.4f}" if max_ms is not None else ""
+                print(
+                    f"    [dry-run] {int_key}: would write "
+                    f"{mean_key}={mean_ms:.4f}, {p99_key}={p99_ms:.4f}{max_part}"
+                )
                 total_intervals_updated += 1
                 continue
 
             timing[mean_key] = mean_ms
             timing[p99_key]  = p99_ms
+            if max_ms is not None:
+                timing[max_key] = max_ms
             timing.setdefault("model", model)
             timing_path.parent.mkdir(parents=True, exist_ok=True)
             timing_path.write_text(json.dumps(timing, indent=2))
             total_intervals_updated += 1
             if args.verbose:
-                print(f"    {int_key}: wrote {mean_key}={mean_ms:.4f}, {p99_key}={p99_ms:.4f}")
+                max_part = f", {max_key}={max_ms:.4f}" if max_ms is not None else ""
+                print(
+                    f"    {int_key}: wrote "
+                    f"{mean_key}={mean_ms:.4f}, {p99_key}={p99_ms:.4f}{max_part}"
+                )
 
         print(f"  Processed {total_evals_processed} eval JSONs, "
               f"updated {total_intervals_updated} intervals")
