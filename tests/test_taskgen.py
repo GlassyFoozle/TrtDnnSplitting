@@ -83,6 +83,39 @@ def test_utilization_consistent(tmp_path):
         )
 
 
+def test_dnn_gpu_utilization_with_c_ratio(tmp_path):
+    """GPU-utilization mode should preserve target GPU U and sample C/G ratios."""
+    from src.integration.dnn_workload_generator import generate_tasksets
+    U_target = 0.5
+    c_min, c_max = 0.0, 0.5
+    cfg = _make_config(
+        n_tasksets=3,
+        utilization=U_target,
+        utilization_basis="gpu",
+        utilization_kind="dnn_gpu",
+        c_ratio_range=(c_min, c_max),
+        n_tasks=4,
+        models=["alexnet", "resnet18"],
+        seed=11,
+    )
+    paths = generate_tasksets(cfg, output_dir=tmp_path)
+    assert paths
+
+    for p in paths:
+        data = json.loads(p.read_text())
+        assert data.get("_utilization_kind") == "dnn_gpu"
+        gpu_u = data.get("_actual_gpu_utilization")
+        total_u = data.get("_actual_total_utilization")
+        assert abs(gpu_u - U_target) < 0.01
+        assert total_u >= gpu_u
+        assert total_u <= U_target * (1.0 + c_max) + 0.02
+        for task in data.get("tasks", []):
+            ratio = task.get("sampled_c_ratio")
+            assert c_min <= ratio <= c_max
+            expected_period = task["real_gpu_wcet_ms"] / task["target_gpu_utilization"]
+            assert abs(task["period_ms"] - expected_period) < 1e-4
+
+
 def test_dry_run_wcet_fallback():
     """_get_base_gpu_wcet_ms returns a positive value for known models even without cache."""
     from src.integration.dnn_workload_generator import _get_base_gpu_wcet_ms

@@ -413,6 +413,7 @@ def apply_k_chunks(
     candidate_chunk_profiles = candidate_count * actual_k
     warmup = int(kwargs.get("warmup", 20) or 0)
     iters = int(kwargs.get("iters", 200) or 0)
+    masks = _k_chunk_candidate_masks(boundary_count, actual_k, enabled)
 
     if search_stats is not None:
         search_stats.k_split_calls += 1
@@ -421,6 +422,17 @@ def apply_k_chunks(
         search_stats.k_split_candidate_inference_runs += (
             candidate_chunk_profiles * (warmup + iters)
         )
+        record_mask_profiles = getattr(
+            search_stats, "record_k_split_candidate_mask_profiles", None
+        )
+        if callable(record_mask_profiles):
+            record_mask_profiles(
+                dnn_task.model_name,
+                str(kwargs.get("precision", getattr(dnn_task, "precision", "fp32"))),
+                masks,
+                warmup,
+                iters,
+            )
 
     force = bool(kwargs.get("force", False))
     cache_key = _k_split_cache_key(
@@ -443,8 +455,6 @@ def apply_k_chunks(
             )
             if cached_result.success:
                 return cached_result
-
-    masks = _k_chunk_candidate_masks(boundary_count, actual_k, enabled)
 
     if len(masks) > max_k_search_candidates:
         return MaskApplicationResult(

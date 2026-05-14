@@ -18,11 +18,17 @@ legacy:
 dnnsplitting:
 
   Mirrors DNNSplitting/generate_task_set.py more closely. Utilization is first
-  distributed across CPU partitions, then across tasks on each CPU. The
-  original generator samples a period T and G_ratio, then computes
-  total_work = U_i * T, G = total_work * G_ratio, and C = total_work - G.
-  With real DNNs, G is fixed by TensorRT measurements, so this mode samples
-  G_ratio and derives total_work = G / G_ratio and T = total_work / U_i.
+  distributed across CPU partitions, then across tasks on each CPU.
+
+  In the total-utilization path, the original generator samples a period T and
+  G_ratio, then computes total_work = U_i * T, G = total_work * G_ratio, and
+  C = total_work - G. With real DNNs, G is fixed by TensorRT measurements, so
+  this mode samples G_ratio and derives total_work = G / G_ratio and
+  T = total_work / U_i.
+
+  In the DNN/GPU-utilization path, U_i is GPU-only. The generator derives
+  T = G / U_i, samples C_ratio = C / G, and sets C = G * C_ratio.
+
   Period bounds are an optional validity filter rather than the driver.
 
 UUniFast reference:
@@ -277,6 +283,8 @@ class WorkloadConfig:
     tasks_per_cpu_range: Optional[Tuple[int, int]] = None
     number_of_inference_segments_range: Optional[Tuple[int, int]] = None
     max_block_count_range: Optional[Tuple[int, int]] = None
+    c_ratio_range: Optional[Tuple[float, float]] = None
+    utilization_kind: str = "total"
     profile_missing_k1: bool = False
     warmup: int = 20
     iters: int = 200
@@ -514,6 +522,11 @@ def _generate_dnnsplitting_taskset(
     g_min, g_max = config.g_ratio_range
     if not (0.0 < g_min <= g_max <= 1.0):
         raise ValueError("g_ratio_range must satisfy 0.0 < min <= max <= 1.0")
+    c_ratio_range = config.c_ratio_range
+    if c_ratio_range is not None:
+        c_min, c_max = c_ratio_range
+        if not (0.0 <= c_min <= c_max):
+            raise ValueError("c_ratio_range must satisfy 0.0 <= min <= max")
     if config.tasks_per_cpu is not None and config.tasks_per_cpu <= 0:
         raise ValueError("tasks_per_cpu must be positive when set")
 
@@ -551,6 +564,7 @@ def _generate_dnnsplitting_taskset(
         valid = True
         model_counts: Dict[str, int] = {}
         actual_ratios: List[float] = []
+        actual_c_ratios: List[float] = []
 
         for cpu_id, count in enumerate(cpu_task_counts):
             if count <= 0:
@@ -578,10 +592,22 @@ def _generate_dnnsplitting_taskset(
                     cpu_total = total_budget - G_i
                     T_i = total_budget / u_i
                     actual_g_ratio = sampled_g_ratio
+                    actual_c_ratio = cpu_total / G_i if G_i > 0 else 0.0
                     if not (config.period_min_ms <= T_i <= config.period_max_ms):
                         reject("derived_period_out_of_range")
                         valid = False
                         break
+                elif config.utilization_basis == "gpu" and c_ratio_range is not None:
+                    sampled_c_ratio = rng.uniform(c_ratio_range[0], c_ratio_range[1])
+                    T_i = G_i / u_i
+                    if not (config.period_min_ms <= T_i <= config.period_max_ms):
+                        reject("derived_period_out_of_range")
+                        valid = False
+                        break
+                    cpu_total = G_i * sampled_c_ratio
+                    actual_c_ratio = sampled_c_ratio
+                    actual_g_ratio = 1.0 / (1.0 + sampled_c_ratio)
+                    sampled_g_ratio = actual_g_ratio
                 elif config.utilization_basis == "gpu":
                     # Backward-compatible interpretation: U_i is GPU-only.
                     # CPU is still derived from sampled G_ratio, so total
@@ -595,6 +621,7 @@ def _generate_dnnsplitting_taskset(
                     total_budget = G_i / sampled_g_ratio
                     cpu_total = total_budget - G_i
                     actual_g_ratio = sampled_g_ratio
+                    actual_c_ratio = cpu_total / G_i if G_i > 0 else 0.0
                 else:
                     raise ValueError(
                         f"Unsupported utilization_basis={config.utilization_basis!r}; "
@@ -605,6 +632,12 @@ def _generate_dnnsplitting_taskset(
                 task_idx += 1
                 model_counts[model] = model_counts.get(model, 0) + 1
                 actual_ratios.append(actual_g_ratio)
+                actual_c_ratios.append(actual_c_ratio)
+                target_field = (
+                    "target_gpu_utilization"
+                    if config.utilization_basis == "gpu"
+                    else "target_total_utilization"
+                )
                 tasks.append({
                     "task_name": f"tau{task_idx}_{model}",
                     "model_name": model,
@@ -618,14 +651,17 @@ def _generate_dnnsplitting_taskset(
                     "target_chunks": 1,
                     "wcet_metric": config.wcet_metric,
                     "target_utilization": round(u_i, 8),
+                    target_field: round(u_i, 8),
                     "real_gpu_wcet_ms": round(G_i, 6),
                     "sampled_g_ratio": round(sampled_g_ratio, 6),
                     "actual_g_ratio": round(actual_g_ratio, 6),
+                    "sampled_c_ratio": round(actual_c_ratio, 6),
+                    "actual_c_ratio": round(actual_c_ratio, 6),
                     "notes": (
                         f"generated taskgen=dnnsplitting U={u_i:.4f} "
                         f"basis={config.utilization_basis} G={G_i:.4f}ms "
                         f"C={cpu_total:.4f}ms T={T_i:.4f}ms "
-                        f"G_ratio_sampled={sampled_g_ratio:.4f}"
+                        f"G_ratio={actual_g_ratio:.4f} C_ratio={actual_c_ratio:.4f}"
                     ),
                 })
             if not valid:
@@ -645,10 +681,26 @@ def _generate_dnnsplitting_taskset(
         )
         total_u = gpu_u + cpu_u
         per_cpu: Dict[str, float] = {}
+        per_cpu_gpu: Dict[str, float] = {}
         for t in tasks:
             key = str(t["cpu_id"])
             per_cpu[key] = per_cpu.get(key, 0.0) + (
                 (float(t["cpu_pre_ms"]) + float(t["cpu_post_ms"])) / float(t["period_ms"])
+            )
+            per_cpu_gpu[key] = per_cpu_gpu.get(key, 0.0) + (
+                base_wcets[t["model_name"]] / float(t["period_ms"])
+            )
+
+        if config.utilization_basis == "gpu" and c_ratio_range is not None:
+            formula = (
+                "sample DNN/GPU U_i as DNNSplitting; set real_G=model WCET; "
+                "period=deadline=real_G/U_i; sample C_ratio=C/G; CPU=real_G*C_ratio"
+            )
+        else:
+            formula = (
+                "sample U_i as DNNSplitting; sample G_ratio; set real_G=model "
+                "WCET; total_exec=real_G/G_ratio; CPU=total_exec-real_G; "
+                "period=deadline=total_exec/U_i for utilization_basis=total"
             )
 
         return {
@@ -660,11 +712,16 @@ def _generate_dnnsplitting_taskset(
             "precision": config.precision,
             "wcet_metric": config.wcet_metric,
             "utilization_basis": config.utilization_basis,
+            "utilization_kind": config.utilization_kind,
             "taskgen_mode": config.taskgen_mode,
             "_generated": True,
             "_seed": config.seed,
             "_taskset_idx": taskset_idx,
             "_utilization": config.utilization,
+            "_utilization_kind": config.utilization_kind,
+            "_selected_dnn_utilization": (
+                config.utilization if config.utilization_kind == "dnn_gpu" else None
+            ),
             "_n_tasks": len(tasks),
             "_num_cpus": num_cpus,
             "_tasks_per_cpu": config.tasks_per_cpu,
@@ -676,6 +733,7 @@ def _generate_dnnsplitting_taskset(
                 else None
             ),
             "_g_ratio_range": [g_min, g_max],
+            "_c_ratio_range": list(c_ratio_range) if c_ratio_range is not None else None,
             "_g_utilization_threshold": config.g_utilization_threshold,
             "_number_of_inference_segments": n_inference_segments,
             "_max_block_count": max_block_count,
@@ -692,11 +750,7 @@ def _generate_dnnsplitting_taskset(
             "_per_splitting_overhead": config.per_splitting_overhead,
             "_uniform_cpu_utilization": config.uniform_cpu_utilization,
             "_uniform_task_utilization": config.uniform_task_utilization,
-            "_generation_formula": (
-                "sample U_i as DNNSplitting; sample G_ratio; set real_G=model "
-                "WCET; total_exec=real_G/G_ratio; CPU=total_exec-real_G; "
-                "period=deadline=total_exec/U_i for utilization_basis=total"
-            ),
+            "_generation_formula": formula,
             "_generation_attempt": attempt + 1,
             "_rejection_reasons": dict(sorted(rejection_reasons.items())),
             "_actual_gpu_utilization": round(gpu_u, 6),
@@ -704,6 +758,9 @@ def _generate_dnnsplitting_taskset(
             "_actual_total_utilization": round(total_u, 6),
             "_actual_cpu_partition_utilization": {
                 cpu: round(util, 6) for cpu, util in sorted(per_cpu.items())
+            },
+            "_actual_gpu_partition_utilization": {
+                cpu: round(util, 6) for cpu, util in sorted(per_cpu_gpu.items())
             },
             "_model_distribution": dict(sorted(model_counts.items())),
             "_cpu_segment_distribution_ms": {
@@ -722,6 +779,11 @@ def _generate_dnnsplitting_taskset(
                 "min": round(min(actual_ratios), 6),
                 "max": round(max(actual_ratios), 6),
                 "avg": round(sum(actual_ratios) / len(actual_ratios), 6),
+            },
+            "_actual_c_ratio": {
+                "min": round(min(actual_c_ratios), 6),
+                "max": round(max(actual_c_ratios), 6),
+                "avg": round(sum(actual_c_ratios) / len(actual_c_ratios), 6),
             },
             "_actual_period_ms": {
                 "min": round(min(float(t["period_ms"]) for t in tasks), 6),

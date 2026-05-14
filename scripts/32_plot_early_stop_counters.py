@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import sys
 from pathlib import Path
@@ -31,10 +32,12 @@ STYLE = {
     "SS-tol-fb-off": {"color": "#2F6FB3", "label": "offload-tol-fb (early stop=off)"},
     "SS-tol-fb": {"color": "#8000FF", "label": "offload-tol-fb"},
 }
+DEFAULT_X_AXIS_LABEL = "Total utilization U"
 
 DEFAULT_METRICS = [
     "k_split_calls",
-    "k_split_candidate_chunk_profiles",
+    "k_split_candidate_mask_profiles",
+    "k_split_candidate_masks",
 ]
 
 METRIC_LABELS = {
@@ -43,7 +46,9 @@ METRIC_LABELS = {
     "cache_hits": "Cache hits",
     "k_split_calls": "K-split calls",
     "k_split_cache_hits": "K-split cache hits",
-    "k_split_candidate_masks": "Candidate masks",
+    "k_split_candidate_masks": "Candidate mask profiles (no cache)",
+    "k_split_candidate_mask_profiles": "Candidate mask profiles",
+    "k_split_candidate_mask_inference_runs": "Candidate mask inference runs",
     "k_split_candidate_chunk_profiles": "Candidate chunk profiles",
     "k_split_candidate_inference_runs": "Candidate inference runs",
     "early_stop_optimistic_checks": "Optimistic R checks",
@@ -86,8 +91,8 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=DEFAULT_METRICS,
         help=(
-            "Metric columns to plot. Default: k_split_calls and "
-            "k_split_candidate_chunk_profiles."
+            "Metric columns to plot. Default: k_split_calls, "
+            "k_split_candidate_mask_profiles, and k_split_candidate_masks."
         ),
     )
     ap.add_argument(
@@ -102,6 +107,17 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=24,
         help="Number of histogram bins per metric.",
+    )
+    ap.add_argument(
+        "--max-utilization",
+        type=float,
+        default=0.9,
+        help="Drop rows above this utilization before plotting. Default: 0.9.",
+    )
+    ap.add_argument(
+        "--x-axis-label",
+        default=None,
+        help="Override x-axis label; otherwise inferred from run_config.json when available.",
     )
     return ap.parse_args()
 
@@ -134,7 +150,26 @@ def resolve_output_dir(args: argparse.Namespace, run_dir: Path) -> Path:
     return run_dir
 
 
-def load_rows(csv_path: Path, metrics: Sequence[str], algorithms: Sequence[str]) -> List[dict]:
+def infer_x_axis_label(run_dir: Path, override: str | None) -> str:
+    if override:
+        return override
+    run_config = run_dir / "run_config.json"
+    try:
+        data = json.loads(run_config.read_text())
+        mapped = data.get("mapped_values", {})
+        if mapped.get("utilization_kind") == "dnn_gpu":
+            return "GPU utilization U"
+    except Exception:
+        pass
+    return DEFAULT_X_AXIS_LABEL
+
+
+def load_rows(
+    csv_path: Path,
+    metrics: Sequence[str],
+    algorithms: Sequence[str],
+    max_utilization: float | None,
+) -> List[dict]:
     allowed = set(algorithms)
     rows: List[dict] = []
     with csv_path.open(newline="") as f:
@@ -151,6 +186,8 @@ def load_rows(csv_path: Path, metrics: Sequence[str], algorithms: Sequence[str])
             try:
                 util = float(raw["utilization"])
             except (KeyError, TypeError, ValueError):
+                continue
+            if max_utilization is not None and util > max_utilization + 1e-12:
                 continue
             row = {"utilization": util, "algorithm": algorithm}
             for metric in metrics:
@@ -217,6 +254,7 @@ def plot_boxplots(
     algorithms: Sequence[str],
     output_base: Path,
     dpi: int,
+    x_axis_label: str,
 ) -> None:
     plt, MaxNLocator, font_family = load_matplotlib()
     utils = sorted({r["utilization"] for r in rows})
@@ -300,7 +338,7 @@ def plot_boxplots(
             frameon=True,
             framealpha=0.88,
         )
-        fig.supxlabel("Total utilization U", fontsize=13)
+        fig.supxlabel(x_axis_label, fontsize=13)
         fig.supylabel("Counter value", fontsize=13)
         fig.tight_layout(pad=0.8, rect=(0.03, 0.02, 1.0, 0.94))
         save_both(fig, output_base.with_name(output_base.name + "_boxplot"), dpi)
@@ -358,6 +396,89 @@ def plot_histograms(
         fig.supylabel("Taskset count", fontsize=13)
         fig.tight_layout(pad=0.8, rect=(0.03, 0.02, 1.0, 0.94))
         save_both(fig, output_base.with_name(output_base.name + "_histogram"), dpi)
+        plt.close(fig)
+
+
+def plot_histograms_by_utilization(
+    rows: List[dict],
+    metrics: Sequence[str],
+    algorithms: Sequence[str],
+    output_base: Path,
+    dpi: int,
+    bins: int,
+) -> None:
+    for util in sorted({r["utilization"] for r in rows}):
+        util_rows = [r for r in rows if r["utilization"] == util]
+        if not util_rows:
+            continue
+        util_tag = f"u{util:.2f}".replace(".", "p")
+        util_base = output_base.with_name(output_base.name + f"_histogram_{util_tag}")
+        plot_histogram_figure(
+            util_rows,
+            metrics,
+            algorithms,
+            util_base,
+            dpi,
+            bins,
+            title_suffix=f"U={util:.2f}",
+        )
+
+
+def plot_histogram_figure(
+    rows: List[dict],
+    metrics: Sequence[str],
+    algorithms: Sequence[str],
+    output_base: Path,
+    dpi: int,
+    bins: int,
+    title_suffix: str | None = None,
+) -> None:
+    plt, MaxNLocator, font_family = load_matplotlib()
+
+    with plt.rc_context({"font.family": font_family, "mathtext.fontset": "stix"}):
+        fig, axes = plt.subplots(
+            1, len(metrics), figsize=figure_size(len(metrics)), squeeze=False
+        )
+        axes_flat = list(axes[0])
+
+        for ax, metric in zip(axes_flat, metrics):
+            all_values: List[float] = [r[metric] for r in rows]
+            common_bins = make_bins(all_values, bins)
+            for algorithm in algorithms:
+                values = [r[metric] for r in rows if r["algorithm"] == algorithm]
+                color = STYLE.get(algorithm, {}).get("color", "#333333")
+                ax.hist(
+                    values,
+                    bins=common_bins,
+                    histtype="step",
+                    linewidth=1.7,
+                    color=color,
+                    label=STYLE.get(algorithm, {}).get("label", algorithm),
+                )
+            title = metric_label(metric)
+            if title_suffix:
+                title = f"{title} ({title_suffix})"
+            ax.set_title(title, fontsize=12)
+            ax.set_xlabel("Counter value", fontsize=10)
+            ax.tick_params(axis="both", labelsize=10)
+            ax.grid(True, axis="y", linestyle=(0, (5, 4)), linewidth=0.9, alpha=0.65)
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+            ax.ticklabel_format(axis="both", style="plain", useOffset=False)
+
+        handles, labels = axes_flat[0].get_legend_handles_labels()
+        fig.legend(
+            handles,
+            labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.02),
+            ncol=len(algorithms),
+            fontsize=9,
+            frameon=True,
+            framealpha=0.88,
+        )
+        fig.supylabel("Taskset count", fontsize=13)
+        fig.tight_layout(pad=0.8, rect=(0.03, 0.02, 1.0, 0.94))
+        save_both(fig, output_base, dpi)
         plt.close(fig)
 
 
@@ -446,11 +567,15 @@ def main() -> int:
     run_dir = resolve_run_dir(args)
     csv_path = resolve_csv(args, run_dir)
     out_dir = resolve_output_dir(args, run_dir)
-    rows = load_rows(csv_path, args.metrics, args.algorithms)
+    rows = load_rows(csv_path, args.metrics, args.algorithms, args.max_utilization)
     output_base = out_dir / args.output_prefix
+    x_axis_label = infer_x_axis_label(run_dir, args.x_axis_label)
 
-    plot_boxplots(rows, args.metrics, args.algorithms, output_base, args.dpi)
+    plot_boxplots(rows, args.metrics, args.algorithms, output_base, args.dpi, x_axis_label)
     plot_histograms(rows, args.metrics, args.algorithms, output_base, args.dpi, args.hist_bins)
+    plot_histograms_by_utilization(
+        rows, args.metrics, args.algorithms, output_base, args.dpi, args.hist_bins
+    )
     return 0
 
 

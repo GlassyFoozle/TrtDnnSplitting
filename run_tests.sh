@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_DIR="configs/yaml/260511_configs"
+CONFIG_DIR="${CONFIG_DIR:-configs/yaml/gpu_util_configs}"
 RESULT_LOG_DIR="results"
 PLOT_DIR="results/plots"
 MODELS="${MODELS:-alexnet resnet18 vgg19 vit_l_16}"
@@ -19,9 +19,9 @@ mkdir -p "${RESULT_LOG_DIR}" "${PLOT_DIR}"
 
 CONFIGS=(
   "1_base.yaml"
-  "2_G_ratio_06.yaml"
-  "3_G_ratio_08.yaml"
-  "4_G_ratio_10.yaml"
+  "2_C_ratio_00.yaml"
+  "3_C_ratio_25.yaml"
+  "4_C_ratio_50.yaml"
   "5_task1.yaml"
   "6_task3.yaml"
   "7_singleCPU_task4.yaml"
@@ -37,38 +37,38 @@ for config_name in "${CONFIGS[@]}"; do
   run_name="${RUN_LABEL}_${run_suffix}"
   log_path="${RESULT_LOG_DIR}/${run_name}.log"
 
-  # echo "============================================================"
-  # echo "[run] ${config_path}"
-  # echo "[run] output: results/dnn_experiments/${run_name}"
-  # echo "[run] log: ${log_path}"
-  # echo "============================================================"
+  echo "============================================================"
+  echo "[run] ${config_path}"
+  echo "[run] output: results/dnn_experiments/${run_name}"
+  echo "[run] log: ${log_path}"
+  echo "============================================================"
 
-  # cmd=(conda run --no-capture-output -n trt python -u scripts/30_run_yaml_fig4_experiment.py \
-  #   --config "${config_path}" \
-  #   --models ${MODELS} \
-  #   --split-policy major_blocks \
-  #   --algorithm-set "${ALGORITHM_SET}" \
-  #   --num-tasksets-override "${NUM_TASKSETS_OVERRIDE}" \
-  #   --live \
-  #   --max-candidates 1000000 \
-  #   --max-profiles 1000000 \
-  #   --min-free-gb 50 \
-  #   --run-name "${run_name}")
+  cmd=(conda run --no-capture-output -n trt python -u scripts/30_run_yaml_fig4_experiment.py \
+    --config "${config_path}" \
+    --models ${MODELS} \
+    --split-policy major_blocks \
+    --algorithm-set "${ALGORITHM_SET}" \
+    --num-tasksets-override "${NUM_TASKSETS_OVERRIDE}" \
+    --live \
+    --max-candidates 1000000 \
+    --max-profiles 1000000 \
+    --min-free-gb 50 \
+    --run-name "${run_name}")
 
-  # if [[ -n "${UTILIZATIONS}" ]]; then
-  #   cmd+=(--utilizations ${UTILIZATIONS})
-  # fi
-  # if [[ -n "${ALGORITHMS}" ]]; then
-  #   cmd+=(--algorithms ${ALGORITHMS})
-  # fi
-  # if [[ -n "${EXISTING_TASKSET_ROOT}" ]]; then
-  #   cmd+=(--existing-taskset-root "${EXISTING_TASKSET_ROOT}")
-  # fi
-  # if [[ "${VERBOSE_EVALUATOR}" == "1" ]]; then
-  #   cmd+=(--verbose-evaluator)
-  # fi
+  if [[ -n "${UTILIZATIONS}" ]]; then
+    cmd+=(--utilizations ${UTILIZATIONS})
+  fi
+  if [[ -n "${ALGORITHMS}" ]]; then
+    cmd+=(--algorithms ${ALGORITHMS})
+  fi
+  if [[ -n "${EXISTING_TASKSET_ROOT}" ]]; then
+    cmd+=(--existing-taskset-root "${EXISTING_TASKSET_ROOT}")
+  fi
+  if [[ "${VERBOSE_EVALUATOR}" == "1" ]]; then
+    cmd+=(--verbose-evaluator)
+  fi
 
-  # "${cmd[@]}" 2>&1 | tee "${log_path}"
+  "${cmd[@]}" 2>&1 | tee "${log_path}"
 
   echo "============================================================"
   echo "[plot] ${run_name}"

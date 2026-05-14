@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -118,6 +119,11 @@ def parse_args() -> argparse.Namespace:
         choices=list(_PLOT_MODE_FILTERS.keys()),
         dest="plot_mode",
         help="Which algorithms to include: all|full8|main4|ss_only|uni_only|heu_tol_fb_only",
+    )
+    ap.add_argument(
+        "--x-axis-label",
+        default=None,
+        help="Override x-axis label; otherwise inferred from run_config.json when available.",
     )
     return ap.parse_args()
 
@@ -327,8 +333,20 @@ def plot_with_pillow(
 
 
 def main() -> int:
+    global _X_AXIS_LABEL
     args = parse_args()
     csv_path = resolve_csv(args)
+    if args.x_axis_label:
+        _X_AXIS_LABEL = args.x_axis_label
+    elif args.run_dir:
+        run_config = Path(args.run_dir) / "run_config.json"
+        try:
+            data = json.loads(run_config.read_text())
+            mapped = data.get("mapped_values", {})
+            if mapped.get("utilization_kind") == "dnn_gpu":
+                _X_AXIS_LABEL = "GPU utilization U"
+        except Exception:
+            pass
     series = load_series(csv_path)
     if not series:
         print(f"[error] no series found in {csv_path}", file=sys.stderr)

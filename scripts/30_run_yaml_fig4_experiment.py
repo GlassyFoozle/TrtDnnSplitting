@@ -152,7 +152,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--max-candidates", type=int, default=10000)
     ap.add_argument("--max-profiles", type=int, default=500)
-    ap.add_argument("--max-iterations", type=int, default=1000)
+    ap.add_argument("--max-iterations", type=int, default=10000)
     ap.add_argument("--global-max-real-profiles", type=int, default=None)
     ap.add_argument("--cache-only-live", action="store_true", default=False)
     ap.add_argument("--stop-on-first-build", action="store_true", default=False)
@@ -352,13 +352,18 @@ def first_range_value(data: Dict[str, Any], key: str, default: float) -> Tuple[f
     return lo, ""
 
 
-def utilization_list(data: Dict[str, Any], override: Optional[List[float]]) -> List[float]:
+def utilization_list(
+    data: Dict[str, Any],
+    override: Optional[List[float]],
+    range_key: str = "utilization_range",
+    step_key: str = "utilization_step",
+) -> List[float]:
     if override:
         return [round(float(u), 10) for u in override]
-    lo, hi = range_pair(data, "utilization_range", (0.7, 0.9))
-    step = float(data.get("utilization_step", 0.05))
+    lo, hi = range_pair(data, range_key, (0.7, 0.9))
+    step = float(data.get(step_key, 0.05))
     if step <= 0:
-        raise ValueError("utilization_step must be positive")
+        raise ValueError(f"{step_key} must be positive")
     values: List[float] = []
     cur = lo
     while cur <= hi + (step / 1000.0):
@@ -386,7 +391,37 @@ def build_mapping(
     notes: List[str] = []
     num_cpus_range = int_range(yaml_data, "number_of_cpu_range", 1)
     tasks_per_cpu_range = int_range(yaml_data, "number_of_tasks_per_cpu_range", 1)
-    g_min, g_max = range_pair(yaml_data, "G_ratio_range", (0.6, 1.0))
+    has_total_utilization = "utilization_range" in yaml_data
+    has_dnn_utilization = "dnn_utilization_range" in yaml_data
+    if has_total_utilization and has_dnn_utilization:
+        raise ValueError("Use either utilization_range or dnn_utilization_range, not both")
+
+    if has_dnn_utilization:
+        utilization_range_key = "dnn_utilization_range"
+        utilization_step_key = "dnn_utilization_step"
+        utilization_basis = "gpu"
+        utilization_kind = "dnn_gpu"
+        c_min, c_max = range_pair(yaml_data, "C_ratio_range", (0.0, 0.5))
+        if not (0.0 <= c_min <= c_max):
+            raise ValueError("C_ratio_range must satisfy 0.0 <= min <= max")
+        # Equivalent G/(G+C) range for reporting/backward-compatible diagnostics.
+        g_min, g_max = 1.0 / (1.0 + c_max), 1.0 / (1.0 + c_min)
+        notes.append(
+            "dnn_utilization_range is interpreted as total task-set GPU utilization; "
+            "task periods are derived as T = real_G / U_gpu_i."
+        )
+        notes.append(
+            "C_ratio_range is interpreted as CPU/GPU execution-time ratio C/G; "
+            "CPU is split randomly into pre/post segments."
+        )
+    else:
+        utilization_range_key = "utilization_range"
+        utilization_step_key = "utilization_step"
+        utilization_basis = "total"
+        utilization_kind = "total"
+        c_min = c_max = None
+        g_min, g_max = range_pair(yaml_data, "G_ratio_range", (0.6, 1.0))
+
     g_threshold, note = first_range_value(yaml_data, "G_utilization_threshold_range", 1.0)
     if note:
         notes.append(note)
@@ -394,15 +429,26 @@ def build_mapping(
     max_block_count_range = int_range(yaml_data, "max_block_count_range", 20)
     period_lo, period_hi = range_pair(yaml_data, "period_range", (1.0, 10000.0))
     n_tasksets = int(args.num_tasksets_override or yaml_data.get("n_task_sets", 1))
-    utilizations = utilization_list(yaml_data, args.utilizations)
+    utilizations = utilization_list(
+        yaml_data,
+        args.utilizations,
+        utilization_range_key,
+        utilization_step_key,
+    )
 
     if args.ignore_period_range:
         period_min_ms = 0.001
         period_max_ms = 1_000_000_000.0
-        notes.append(
-            "period_range is ignored by default for real-DNN generation; "
-            "periods are derived from real GPU WCET, sampled G_ratio, and U_i."
-        )
+        if has_dnn_utilization:
+            notes.append(
+                "period_range is ignored by default for real-DNN generation; "
+                "periods are derived from real GPU WCET and GPU U_i."
+            )
+        else:
+            notes.append(
+                "period_range is ignored by default for real-DNN generation; "
+                "periods are derived from real GPU WCET, sampled G_ratio, and U_i."
+            )
     else:
         period_min_ms = period_lo
         period_max_ms = period_hi
@@ -426,9 +472,12 @@ def build_mapping(
             num_cpus_range[1] * tasks_per_cpu_range[1],
         ],
         "utilizations": utilizations,
+        "utilization_kind": utilization_kind,
         "num_tasksets_per_utilization": n_tasksets,
         "g_ratio_min": g_min,
         "g_ratio_max": g_max,
+        "c_ratio_min": c_min,
+        "c_ratio_max": c_max,
         "uniform_cpu_utilization": bool(yaml_data.get("uniform_cpu_utilization", True)),
         "uniform_task_utilization": bool(yaml_data.get("uniform_task_utilization", False)),
         "g_utilization_threshold": g_threshold,
@@ -442,7 +491,7 @@ def build_mapping(
         "period_min_ms_used": period_min_ms,
         "period_max_ms_used": period_max_ms,
         "taskgen_mode": "dnnsplitting",
-        "utilization_basis": "total",
+        "utilization_basis": utilization_basis,
     }
     return mapping, notes
 
@@ -484,11 +533,20 @@ def generate_yaml_tasksets(
             period_min_ms=float(mapping["period_min_ms_used"]),
             period_max_ms=float(mapping["period_max_ms_used"]),
             seed=args.seed + util_idx,
-            utilization_basis="total",
+            utilization_basis=str(mapping["utilization_basis"]),
+            utilization_kind=str(mapping["utilization_kind"]),
             taskgen_mode="dnnsplitting",
             num_cpus=int(mapping["num_cpus"]),
             tasks_per_cpu=int(mapping["num_tasks_per_cpu"]),
             g_ratio_range=(float(mapping["g_ratio_min"]), float(mapping["g_ratio_max"])),
+            c_ratio_range=(
+                (
+                    float(mapping["c_ratio_min"]),
+                    float(mapping["c_ratio_max"]),
+                )
+                if mapping.get("c_ratio_min") is not None
+                else None
+            ),
             uniform_cpu_utilization=bool(mapping["uniform_cpu_utilization"]),
             uniform_task_utilization=bool(mapping["uniform_task_utilization"]),
             g_utilization_threshold=float(mapping["g_utilization_threshold"]),
@@ -538,6 +596,7 @@ def summarize_result(
 def taskset_diagnostics(path: Path) -> Dict[str, Any]:
     raw = json.loads(path.read_text())
     g_info = raw.get("_actual_g_ratio") or {}
+    c_info = raw.get("_actual_c_ratio") or {}
     period_info = raw.get("_actual_period_ms") or {}
     model_dist = raw.get("_model_distribution")
     if not model_dist:
@@ -546,9 +605,13 @@ def taskset_diagnostics(path: Path) -> Dict[str, Any]:
             model_dist[str(task.get("model_name", "unknown"))] += 1
         model_dist = dict(model_dist)
     return {
+        "utilization_kind": str(raw.get("_utilization_kind") or raw.get("utilization_kind") or "total"),
         "actual_g_ratio_min": float(g_info.get("min", 0.0) or 0.0),
         "actual_g_ratio_max": float(g_info.get("max", 0.0) or 0.0),
         "actual_g_ratio_avg": float(g_info.get("avg", 0.0) or 0.0),
+        "actual_c_ratio_min": float(c_info.get("min", 0.0) or 0.0),
+        "actual_c_ratio_max": float(c_info.get("max", 0.0) or 0.0),
+        "actual_c_ratio_avg": float(c_info.get("avg", 0.0) or 0.0),
         "actual_period_min_ms": float(period_info.get("min", 0.0) or 0.0),
         "actual_period_max_ms": float(period_info.get("max", 0.0) or 0.0),
         "model_distribution": json.dumps(model_dist, sort_keys=True),
@@ -575,6 +638,7 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
         split_sets = sum(1 for r in items if r.get("any_split_triggered"))
         ratio_rows.append({
             "utilization": util_key,
+            "utilization_kind": items[0].get("utilization_kind", "total"),
             "algorithm": label,
             "total_tasksets": n,
             "schedulable_count": sched,
@@ -590,12 +654,21 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_cpu_util": avg(items, "cpu_util"),
             "avg_total_util": avg(items, "total_util"),
             "avg_actual_g_ratio": avg(items, "actual_g_ratio_avg"),
+            "avg_actual_c_ratio": avg(items, "actual_c_ratio_avg"),
             "min_actual_g_ratio": min(
                 (float(r.get("actual_g_ratio_min", 0.0) or 0.0) for r in items),
                 default=0.0,
             ),
             "max_actual_g_ratio": max(
                 (float(r.get("actual_g_ratio_max", 0.0) or 0.0) for r in items),
+                default=0.0,
+            ),
+            "min_actual_c_ratio": min(
+                (float(r.get("actual_c_ratio_min", 0.0) or 0.0) for r in items),
+                default=0.0,
+            ),
+            "max_actual_c_ratio": max(
+                (float(r.get("actual_c_ratio_max", 0.0) or 0.0) for r in items),
                 default=0.0,
             ),
             "avg_masks_evaluated": avg(items, "masks_evaluated"),
@@ -610,6 +683,8 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_k_split_calls": avg(items, "k_split_calls"),
             "avg_k_split_cache_hits": avg(items, "k_split_cache_hits"),
             "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
+            "avg_k_split_candidate_mask_profiles": avg(items, "k_split_candidate_mask_profiles"),
+            "avg_k_split_candidate_mask_inference_runs": avg(items, "k_split_candidate_mask_inference_runs"),
             "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
             "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
             "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
@@ -640,6 +715,8 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_k_split_calls": avg(items, "k_split_calls"),
             "avg_k_split_cache_hits": avg(items, "k_split_cache_hits"),
             "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
+            "avg_k_split_candidate_mask_profiles": avg(items, "k_split_candidate_mask_profiles"),
+            "avg_k_split_candidate_mask_inference_runs": avg(items, "k_split_candidate_mask_inference_runs"),
             "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
             "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
             "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
@@ -685,16 +762,24 @@ def taskset_diag_by_util(tasksets: List[TasksetEntry]) -> List[Dict[str, Any]]:
                 model_counts[model] += int(count)
         rows.append({
             "utilization": util_key,
+            "utilization_kind": diag_rows[0].get("utilization_kind", "total") if diag_rows else "total",
             "tasksets": len(paths),
             "avg_gpu_util": avg(diag_rows, "gpu_util"),
             "avg_cpu_util": avg(diag_rows, "cpu_util"),
             "avg_total_util": avg(diag_rows, "total_util"),
             "avg_actual_g_ratio": avg(diag_rows, "actual_g_ratio_avg"),
+            "avg_actual_c_ratio": avg(diag_rows, "actual_c_ratio_avg"),
             "min_actual_g_ratio": min(
                 (float(r["actual_g_ratio_min"]) for r in diag_rows), default=0.0
             ),
             "max_actual_g_ratio": max(
                 (float(r["actual_g_ratio_max"]) for r in diag_rows), default=0.0
+            ),
+            "min_actual_c_ratio": min(
+                (float(r["actual_c_ratio_min"]) for r in diag_rows), default=0.0
+            ),
+            "max_actual_c_ratio": max(
+                (float(r["actual_c_ratio_max"]) for r in diag_rows), default=0.0
             ),
             "period_min_ms": min(
                 (float(r["actual_period_min_ms"]) for r in diag_rows), default=0.0
@@ -716,6 +801,20 @@ def write_yaml_mapping_report(
     tasksets: List[TasksetEntry],
 ) -> None:
     diag_rows = taskset_diag_by_util(tasksets)
+    if mapping.get("utilization_kind") == "dnn_gpu":
+        period_text = (
+            "The YAML `period_range` is ignored in the default real-DNN mode. "
+            "This run uses `dnn_utilization_range`: GPU execution comes from "
+            "TensorRT DNN WCET metadata, task periods are derived as "
+            "`T = D = G / U_gpu_i`, and CPU time is derived from `C_ratio_range`."
+        )
+    else:
+        period_text = (
+            "The YAML `period_range` is ignored in the default real-DNN mode. "
+            "Unlike synthetic DNNSplitting, this framework fixes GPU execution "
+            "from TensorRT DNN WCET metadata, samples `G_ratio`, derives "
+            "`total_exec = G / G_ratio`, and then derives `T = D = total_exec / U_i`."
+        )
     lines = [
         "# YAML Mapping Report",
         "",
@@ -724,12 +823,7 @@ def write_yaml_mapping_report(
         "",
         "## Period Range Handling",
         "",
-        (
-            "The YAML `period_range` is ignored in the default real-DNN mode. "
-            "Unlike synthetic DNNSplitting, this framework fixes GPU execution "
-            "from TensorRT DNN WCET metadata, samples `G_ratio`, derives "
-            "`total_exec = G / G_ratio`, and then derives `T = D = total_exec / U_i`."
-        ),
+        period_text,
         "",
         "Use `--no-ignore-period-range` only when the YAML period range should be "
         "applied as a validity filter after real-DNN period derivation.",
@@ -758,13 +852,17 @@ def write_yaml_mapping_report(
             diag_rows,
             [
                 "utilization",
+                "utilization_kind",
                 "tasksets",
                 "avg_gpu_util",
                 "avg_cpu_util",
                 "avg_total_util",
                 "avg_actual_g_ratio",
+                "avg_actual_c_ratio",
                 "min_actual_g_ratio",
                 "max_actual_g_ratio",
+                "min_actual_c_ratio",
+                "max_actual_c_ratio",
                 "period_min_ms",
                 "period_max_ms",
                 "model_distribution",
@@ -803,6 +901,7 @@ def write_summary(
         f"- Algorithm set: {getattr(args, 'algorithm_set', 'main4')}",
         f"- Algorithms: {algo_labels}",
         f"- Tasksets generated: {len(tasksets)}",
+        f"- Utilization kind: {mapping.get('utilization_kind', 'total')}",
         f"- Utilizations: {', '.join(str(u) for u in mapping['utilizations'])}",
         f"- Tasksets per utilization: {mapping['num_tasksets_per_utilization']}",
         f"- CPUs: {mapping['num_cpus']}",
@@ -812,6 +911,8 @@ def write_summary(
         f"- Max candidates: {args.max_candidates}",
         f"- Max profiles: {args.max_profiles}",
     ]
+    if mapping.get("c_ratio_min") is not None:
+        lines.append(f"- C-ratio range: [{mapping['c_ratio_min']}, {mapping['c_ratio_max']}]")
     if live_budget is not None:
         # Aggregate unique-mask stats across all per-row records (from stats.to_dict())
         _all_stats = [r.get("stats", {}) for r in per_rows if "stats" not in r]
@@ -839,6 +940,7 @@ def write_summary(
             ratio_rows,
             [
                 "utilization",
+                "utilization_kind",
                 "algorithm",
                 "total_tasksets",
                 "schedulable_count",
@@ -848,10 +950,12 @@ def write_summary(
                 "policy_violation_count",
                 "avg_total_util",
                 "avg_actual_g_ratio",
+                "avg_actual_c_ratio",
                 "avg_masks_evaluated",
                 "avg_dry_run_evaluations",
                 "avg_real_profiles",
                 "avg_cache_hits",
+                "avg_k_split_candidate_mask_profiles",
             ],
         ),
         "",
@@ -882,6 +986,7 @@ def write_summary(
         "- Dry-run mode uses existing chunk timing metadata and does not build/profile new TensorRT engines.",
         "- Live mode is cache-first and uses the existing global live profile budget controls.",
         "- `period_range` is not the task-generation driver in the default real-DNN mapping.",
+        "- In dnn_gpu mode, CSV `utilization` values are target GPU utilizations.",
     ]
     if errors:
         lines += ["", "## Errors", ""]
@@ -912,7 +1017,7 @@ def write_run_config(
         f"{m}:{a}:{label}" for m, a, label in (algorithm_list or _DEFAULT_ALGORITHMS)
     ]
     data["tasksets"] = [
-        {"utilization": util, "path": str(path.relative_to(REPO))}
+        {"utilization": util, "path": str(_display_path(path))}
         for util, path in tasksets
     ]
     (out_dir / "run_config.json").write_text(json.dumps(data, indent=2, sort_keys=True))
@@ -1045,6 +1150,12 @@ def main() -> int:
             row = summarize_result(
                 util, taskset_path, rta_model, algorithm, label, result, initial_masks
             )
+            row["k_split_candidate_mask_profiles"] = int(
+                getattr(result.stats, "k_split_candidate_mask_profiles", 0)
+            )
+            row["k_split_candidate_mask_inference_runs"] = int(
+                getattr(result.stats, "k_split_candidate_mask_inference_runs", 0)
+            )
             per_rows.append(row)
             all_results.append({
                 **{k: v for k, v in row.items() if k != "task_details"},
@@ -1084,18 +1195,20 @@ def main() -> int:
     ratio_rows, split_rows = aggregate(per_rows)
 
     per_fields = [
-        "utilization", "taskset", "taskset_path", "algorithm", "algorithm_label",
+        "utilization", "utilization_kind", "taskset", "taskset_path", "algorithm", "algorithm_label",
         "algorithm_impl", "rta_model", "schedulable", "analysis_error", "error_type",
         "error_message", "overload_reason", "duration_s", "optimization_runtime_s",
         "masks_evaluated", "dry_run_evaluations", "real_profiles", "cache_hits",
         "skipped_cache_misses", "unique_masks_evaluated", "unique_mask_cache_hits",
         "unique_skipped_masks", "interval_timing_cache_hits",
         "k_split_calls", "k_split_cache_hits", "k_split_candidate_masks",
+        "k_split_candidate_mask_profiles", "k_split_candidate_mask_inference_runs",
         "k_split_candidate_chunk_profiles", "k_split_candidate_inference_runs",
         "early_stop_optimistic_checks", "early_stop_optimistic_deadline_misses",
         "gpu_util", "cpu_util", "total_util",
         "max_cpu_partition_util", "actual_g_ratio_min", "actual_g_ratio_max",
-        "actual_g_ratio_avg", "actual_period_min_ms", "actual_period_max_ms",
+        "actual_g_ratio_avg", "actual_c_ratio_min", "actual_c_ratio_max",
+        "actual_c_ratio_avg", "actual_period_min_ms", "actual_period_max_ms",
         "model_distribution", "split_triggered", "split_task_count",
         "single_schedulable", "split_required", "split_proactive",
         "early_stopped_no_split", "final_total_active_boundaries",
@@ -1103,16 +1216,18 @@ def main() -> int:
         "task_chunk_counts", "task_masks",
     ]
     ratio_fields = [
-        "utilization", "algorithm", "total_tasksets", "schedulable_count",
+        "utilization", "utilization_kind", "algorithm", "total_tasksets", "schedulable_count",
         "unschedulable_count", "schedulability_ratio", "analysis_error_count",
         "error_count", "policy_violation_count", "disabled_active_boundaries",
         "avg_gpu_util", "avg_cpu_util", "avg_total_util", "avg_actual_g_ratio",
-        "min_actual_g_ratio", "max_actual_g_ratio", "avg_masks_evaluated",
+        "avg_actual_c_ratio", "min_actual_g_ratio", "max_actual_g_ratio",
+        "min_actual_c_ratio", "max_actual_c_ratio", "avg_masks_evaluated",
         "avg_dry_run_evaluations", "avg_cache_hits", "avg_real_profiles",
         "avg_skipped_cache_misses", "avg_unique_masks_evaluated",
         "avg_unique_mask_cache_hits", "avg_unique_skipped_masks",
         "avg_interval_timing_cache_hits", "avg_k_split_calls",
         "avg_k_split_cache_hits", "avg_k_split_candidate_masks",
+        "avg_k_split_candidate_mask_profiles", "avg_k_split_candidate_mask_inference_runs",
         "avg_k_split_candidate_chunk_profiles", "avg_k_split_candidate_inference_runs",
         "avg_early_stop_optimistic_checks", "avg_early_stop_optimistic_deadline_misses",
         "avg_optimization_runtime_s",
@@ -1125,7 +1240,8 @@ def main() -> int:
         "disabled_active_boundaries", "policy_violation_count",
         "avg_masks_evaluated", "avg_dry_run_evaluations", "avg_cache_hits",
         "avg_real_profiles", "avg_k_split_calls", "avg_k_split_cache_hits",
-        "avg_k_split_candidate_masks", "avg_k_split_candidate_chunk_profiles",
+        "avg_k_split_candidate_masks", "avg_k_split_candidate_mask_profiles",
+        "avg_k_split_candidate_mask_inference_runs", "avg_k_split_candidate_chunk_profiles",
         "avg_k_split_candidate_inference_runs", "avg_early_stop_optimistic_checks",
         "avg_early_stop_optimistic_deadline_misses",
     ]

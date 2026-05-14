@@ -142,6 +142,8 @@ class ProfilingStats:
     k_split_calls: int = 0                # apply_k_chunks() invocations
     k_split_cache_hits: int = 0           # best-K cache hits inside apply_k_chunks()
     k_split_candidate_masks: int = 0      # total candidate masks implied by K-search
+    k_split_candidate_mask_profiles: int = 0  # cold interval-cache e2e mask profiles
+    k_split_candidate_mask_inference_runs: int = 0
     k_split_candidate_chunk_profiles: int = 0
     k_split_candidate_inference_runs: int = 0
     early_stop_optimistic_checks: int = 0
@@ -151,6 +153,7 @@ class ProfilingStats:
     _seen_evaluated: set = field(default_factory=set, repr=False, compare=False)
     _seen_cache_hits: set = field(default_factory=set, repr=False, compare=False)
     _seen_skipped: set = field(default_factory=set, repr=False, compare=False)
+    _seen_k_split_candidate_intervals: set = field(default_factory=set, repr=False, compare=False)
     # Per-model skipped masks — {model: [mask_list, ...]} for diagnostic use
     _skipped_by_model: dict = field(default_factory=dict, repr=False, compare=False)
 
@@ -168,6 +171,35 @@ class ProfilingStats:
     total_profile_wall_s: float = 0.0
     total_interval_engine_build_wall_s: float = 0.0
     total_estimated_cold_s: float = 0.0
+
+    def record_k_split_candidate_mask_profiles(
+        self,
+        model_name: str,
+        precision: str,
+        masks: List[List[int]],
+        warmup: int = 0,
+        iters: int = 0,
+    ) -> None:
+        """
+        Count e2e mask profiles under a per-run cold interval-cache model.
+
+        One profiled mask fills timing for all intervals/chunks in that mask.
+        Later candidate masks are free when every required interval was already
+        observed during this taskset-algorithm run.
+        """
+        for mask in masks:
+            interval_keys = [
+                (model_name, precision, tuple(group))
+                for group in _mask_interval_groups(mask)
+            ]
+            if interval_keys and all(
+                key in self._seen_k_split_candidate_intervals for key in interval_keys
+            ):
+                continue
+            self.k_split_candidate_mask_profiles += 1
+            self.k_split_candidate_mask_inference_runs += int(warmup) + int(iters)
+            for key in interval_keys:
+                self._seen_k_split_candidate_intervals.add(key)
 
     def update(self, result: MaskApplicationResult) -> None:
         self.masks_evaluated += 1
@@ -254,6 +286,8 @@ class ProfilingStats:
             "k_split_calls": self.k_split_calls,
             "k_split_cache_hits": self.k_split_cache_hits,
             "k_split_candidate_masks": self.k_split_candidate_masks,
+            "k_split_candidate_mask_profiles": self.k_split_candidate_mask_profiles,
+            "k_split_candidate_mask_inference_runs": self.k_split_candidate_mask_inference_runs,
             "k_split_candidate_chunk_profiles": self.k_split_candidate_chunk_profiles,
             "k_split_candidate_inference_runs": self.k_split_candidate_inference_runs,
             "early_stop_optimistic_checks": self.early_stop_optimistic_checks,
@@ -271,6 +305,22 @@ class ProfilingStats:
             "total_profile_wall_s": self.total_profile_wall_s,
             "total_estimated_cold_s": self.total_estimated_cold_s,
         }
+
+
+def _mask_interval_groups(mask: List[int]) -> List[List[int]]:
+    """Return consecutive base-chunk index groups implied by a boundary mask."""
+    if not mask:
+        return [[0]]
+    groups: List[List[int]] = []
+    current: List[int] = [0]
+    for boundary_idx, bit in enumerate(mask):
+        if bit == 1:
+            groups.append(current)
+            current = [boundary_idx + 1]
+        else:
+            current.append(boundary_idx + 1)
+    groups.append(current)
+    return groups
 
 
 @dataclass

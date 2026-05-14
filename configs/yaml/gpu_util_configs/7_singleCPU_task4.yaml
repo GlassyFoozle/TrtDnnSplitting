@@ -1,0 +1,23 @@
+output_dir: task_set_list/utilization
+n_task_sets: 100
+
+number_of_cpu_range: [1, 1]
+# Total task-set DNN/GPU utilization range.
+dnn_utilization_range: [0.5, 0.9]
+dnn_utilization_step: 0.1
+number_of_tasks_per_cpu_range: [4, 4]
+period_range: [1000, 10000]
+C_ratio_range: [0.0, 0.5]
+number_of_inference_segments_range: [1, 1]
+max_block_count_range: [20, 20]
+G_utilization_threshold_range: [1.0, 1.0]
+
+per_splitting_overhead: 5
+
+# If true (default), total GPU utilization is divided evenly across CPUs.
+# If false, UUniFast distributes total GPU utilization randomly across CPUs.
+uniform_cpu_utilization: false
+
+# If true, each task on a CPU gets exactly U_cpu / n_tasks GPU utilization.
+# If false (default), UUniFast distributes CPU-local GPU utilization per task.
+uniform_task_utilization: false
