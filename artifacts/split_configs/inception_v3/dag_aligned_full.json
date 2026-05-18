@@ -1,0 +1,891 @@
+{
+  "model": "inception_v3",
+  "variant": "dag_aligned_full",
+  "n_chunks": 22,
+  "input_shape": [
+    1,
+    3,
+    299,
+    299
+  ],
+  "dag_summary": {
+    "full_fx": {
+      "n_nodes": 24,
+      "n_edges": 23,
+      "n_skip_edges": 0,
+      "sync_counts": {
+        "e2e": 1,
+        "critical": 23,
+        "wo_skip": 23,
+        "max": 24
+      },
+      "critical_indices": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22
+      ]
+    }
+  },
+  "dag_aligned_summary": {
+    "candidate_count": 22,
+    "boundary_count": 21,
+    "materialized_count": 22,
+    "notes": "Generated from src.splitting.dag_aligned_split. ViT models use architecture-defined encoder-block chunks."
+  },
+  "chunks": [
+    {
+      "id": 0,
+      "name": "chunk0",
+      "chunk_name": "Conv2d_1a_3x3",
+      "description": "Conv2d_1a_3x3/BasicConv2d",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Conv2d_1a_3x3",
+      "source_module_target": "Conv2d_1a_3x3",
+      "op_type": "BasicConv2d",
+      "covered_fx_nodes": [
+        "Conv2d_1a_3x3"
+      ],
+      "covered_module_targets": [
+        "Conv2d_1a_3x3"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "BasicConv2d boundary; Conv/BN/ReLU internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "1",
+      "notes": "",
+      "input_shape": [
+        1,
+        3,
+        299,
+        299
+      ],
+      "output_shape": [
+        1,
+        32,
+        149,
+        149
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk0.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk0_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk0_fp16.engine"
+    },
+    {
+      "id": 1,
+      "name": "chunk1",
+      "chunk_name": "Conv2d_2a_3x3",
+      "description": "Conv2d_2a_3x3/BasicConv2d",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Conv2d_2a_3x3",
+      "source_module_target": "Conv2d_2a_3x3",
+      "op_type": "BasicConv2d",
+      "covered_fx_nodes": [
+        "Conv2d_2a_3x3"
+      ],
+      "covered_module_targets": [
+        "Conv2d_2a_3x3"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "BasicConv2d boundary; Conv/BN/ReLU internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "2",
+      "notes": "",
+      "input_shape": [
+        1,
+        32,
+        149,
+        149
+      ],
+      "output_shape": [
+        1,
+        32,
+        147,
+        147
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk1.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk1_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk1_fp16.engine"
+    },
+    {
+      "id": 2,
+      "name": "chunk2",
+      "chunk_name": "Conv2d_2b_3x3",
+      "description": "Conv2d_2b_3x3/BasicConv2d",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Conv2d_2b_3x3",
+      "source_module_target": "Conv2d_2b_3x3",
+      "op_type": "BasicConv2d",
+      "covered_fx_nodes": [
+        "Conv2d_2b_3x3"
+      ],
+      "covered_module_targets": [
+        "Conv2d_2b_3x3"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "BasicConv2d boundary; Conv/BN/ReLU internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "3",
+      "notes": "",
+      "input_shape": [
+        1,
+        32,
+        147,
+        147
+      ],
+      "output_shape": [
+        1,
+        64,
+        147,
+        147
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk2.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk2_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk2_fp16.engine"
+    },
+    {
+      "id": 3,
+      "name": "chunk3",
+      "chunk_name": "maxpool1",
+      "description": "maxpool1/MaxPool2d",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "maxpool1",
+      "source_module_target": "maxpool1",
+      "op_type": "MaxPool2d",
+      "covered_fx_nodes": [
+        "maxpool1"
+      ],
+      "covered_module_targets": [
+        "maxpool1"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "InceptionV3 module boundary",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "4",
+      "notes": "",
+      "input_shape": [
+        1,
+        64,
+        147,
+        147
+      ],
+      "output_shape": [
+        1,
+        64,
+        73,
+        73
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk3.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk3_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk3_fp16.engine"
+    },
+    {
+      "id": 4,
+      "name": "chunk4",
+      "chunk_name": "Conv2d_3b_1x1",
+      "description": "Conv2d_3b_1x1/BasicConv2d",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Conv2d_3b_1x1",
+      "source_module_target": "Conv2d_3b_1x1",
+      "op_type": "BasicConv2d",
+      "covered_fx_nodes": [
+        "Conv2d_3b_1x1"
+      ],
+      "covered_module_targets": [
+        "Conv2d_3b_1x1"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "BasicConv2d boundary; Conv/BN/ReLU internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "5",
+      "notes": "",
+      "input_shape": [
+        1,
+        64,
+        73,
+        73
+      ],
+      "output_shape": [
+        1,
+        80,
+        73,
+        73
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk4.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk4_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk4_fp16.engine"
+    },
+    {
+      "id": 5,
+      "name": "chunk5",
+      "chunk_name": "Conv2d_4a_3x3",
+      "description": "Conv2d_4a_3x3/BasicConv2d",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Conv2d_4a_3x3",
+      "source_module_target": "Conv2d_4a_3x3",
+      "op_type": "BasicConv2d",
+      "covered_fx_nodes": [
+        "Conv2d_4a_3x3"
+      ],
+      "covered_module_targets": [
+        "Conv2d_4a_3x3"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "BasicConv2d boundary; Conv/BN/ReLU internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "6",
+      "notes": "",
+      "input_shape": [
+        1,
+        80,
+        73,
+        73
+      ],
+      "output_shape": [
+        1,
+        192,
+        71,
+        71
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk5.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk5_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk5_fp16.engine"
+    },
+    {
+      "id": 6,
+      "name": "chunk6",
+      "chunk_name": "maxpool2",
+      "description": "maxpool2/MaxPool2d",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "maxpool2",
+      "source_module_target": "maxpool2",
+      "op_type": "MaxPool2d",
+      "covered_fx_nodes": [
+        "maxpool2"
+      ],
+      "covered_module_targets": [
+        "maxpool2"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "InceptionV3 module boundary",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "7",
+      "notes": "",
+      "input_shape": [
+        1,
+        192,
+        71,
+        71
+      ],
+      "output_shape": [
+        1,
+        192,
+        35,
+        35
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk6.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk6_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk6_fp16.engine"
+    },
+    {
+      "id": 7,
+      "name": "chunk7",
+      "chunk_name": "Mixed_5b",
+      "description": "Mixed_5b/InceptionA",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_5b",
+      "source_module_target": "Mixed_5b",
+      "op_type": "InceptionA",
+      "covered_fx_nodes": [
+        "Mixed_5b"
+      ],
+      "covered_module_targets": [
+        "Mixed_5b"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "8",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        192,
+        35,
+        35
+      ],
+      "output_shape": [
+        1,
+        256,
+        35,
+        35
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk7.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk7_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk7_fp16.engine"
+    },
+    {
+      "id": 8,
+      "name": "chunk8",
+      "chunk_name": "Mixed_5c",
+      "description": "Mixed_5c/InceptionA",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_5c",
+      "source_module_target": "Mixed_5c",
+      "op_type": "InceptionA",
+      "covered_fx_nodes": [
+        "Mixed_5c"
+      ],
+      "covered_module_targets": [
+        "Mixed_5c"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "9",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        256,
+        35,
+        35
+      ],
+      "output_shape": [
+        1,
+        288,
+        35,
+        35
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk8.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk8_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk8_fp16.engine"
+    },
+    {
+      "id": 9,
+      "name": "chunk9",
+      "chunk_name": "Mixed_5d",
+      "description": "Mixed_5d/InceptionA",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_5d",
+      "source_module_target": "Mixed_5d",
+      "op_type": "InceptionA",
+      "covered_fx_nodes": [
+        "Mixed_5d"
+      ],
+      "covered_module_targets": [
+        "Mixed_5d"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "10",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        288,
+        35,
+        35
+      ],
+      "output_shape": [
+        1,
+        288,
+        35,
+        35
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk9.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk9_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk9_fp16.engine"
+    },
+    {
+      "id": 10,
+      "name": "chunk10",
+      "chunk_name": "Mixed_6a",
+      "description": "Mixed_6a/InceptionB",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_6a",
+      "source_module_target": "Mixed_6a",
+      "op_type": "InceptionB",
+      "covered_fx_nodes": [
+        "Mixed_6a"
+      ],
+      "covered_module_targets": [
+        "Mixed_6a"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "11",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        288,
+        35,
+        35
+      ],
+      "output_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk10.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk10_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk10_fp16.engine"
+    },
+    {
+      "id": 11,
+      "name": "chunk11",
+      "chunk_name": "Mixed_6b",
+      "description": "Mixed_6b/InceptionC",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_6b",
+      "source_module_target": "Mixed_6b",
+      "op_type": "InceptionC",
+      "covered_fx_nodes": [
+        "Mixed_6b"
+      ],
+      "covered_module_targets": [
+        "Mixed_6b"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "12",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "output_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk11.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk11_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk11_fp16.engine"
+    },
+    {
+      "id": 12,
+      "name": "chunk12",
+      "chunk_name": "Mixed_6c",
+      "description": "Mixed_6c/InceptionC",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_6c",
+      "source_module_target": "Mixed_6c",
+      "op_type": "InceptionC",
+      "covered_fx_nodes": [
+        "Mixed_6c"
+      ],
+      "covered_module_targets": [
+        "Mixed_6c"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "13",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "output_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk12.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk12_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk12_fp16.engine"
+    },
+    {
+      "id": 13,
+      "name": "chunk13",
+      "chunk_name": "Mixed_6d",
+      "description": "Mixed_6d/InceptionC",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_6d",
+      "source_module_target": "Mixed_6d",
+      "op_type": "InceptionC",
+      "covered_fx_nodes": [
+        "Mixed_6d"
+      ],
+      "covered_module_targets": [
+        "Mixed_6d"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "14",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "output_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk13.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk13_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk13_fp16.engine"
+    },
+    {
+      "id": 14,
+      "name": "chunk14",
+      "chunk_name": "Mixed_6e",
+      "description": "Mixed_6e/InceptionC",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_6e",
+      "source_module_target": "Mixed_6e",
+      "op_type": "InceptionC",
+      "covered_fx_nodes": [
+        "Mixed_6e"
+      ],
+      "covered_module_targets": [
+        "Mixed_6e"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "15",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "output_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk14.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk14_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk14_fp16.engine"
+    },
+    {
+      "id": 15,
+      "name": "chunk15",
+      "chunk_name": "Mixed_7a",
+      "description": "Mixed_7a/InceptionD",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_7a",
+      "source_module_target": "Mixed_7a",
+      "op_type": "InceptionD",
+      "covered_fx_nodes": [
+        "Mixed_7a"
+      ],
+      "covered_module_targets": [
+        "Mixed_7a"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "16",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        768,
+        17,
+        17
+      ],
+      "output_shape": [
+        1,
+        1280,
+        8,
+        8
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk15.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk15_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk15_fp16.engine"
+    },
+    {
+      "id": 16,
+      "name": "chunk16",
+      "chunk_name": "Mixed_7b",
+      "description": "Mixed_7b/InceptionE",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_7b",
+      "source_module_target": "Mixed_7b",
+      "op_type": "InceptionE",
+      "covered_fx_nodes": [
+        "Mixed_7b"
+      ],
+      "covered_module_targets": [
+        "Mixed_7b"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "17",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        1280,
+        8,
+        8
+      ],
+      "output_shape": [
+        1,
+        2048,
+        8,
+        8
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk16.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk16_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk16_fp16.engine"
+    },
+    {
+      "id": 17,
+      "name": "chunk17",
+      "chunk_name": "Mixed_7c",
+      "description": "Mixed_7c/InceptionE",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "Mixed_7c",
+      "source_module_target": "Mixed_7c",
+      "op_type": "InceptionE",
+      "covered_fx_nodes": [
+        "Mixed_7c"
+      ],
+      "covered_module_targets": [
+        "Mixed_7c"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "Inception mixed-block boundary; branch internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "18",
+      "notes": "Contains parallel convolution/pooling branches and concat; split only at block output.",
+      "input_shape": [
+        1,
+        2048,
+        8,
+        8
+      ],
+      "output_shape": [
+        1,
+        2048,
+        8,
+        8
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk17.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk17_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk17_fp16.engine"
+    },
+    {
+      "id": 18,
+      "name": "chunk18",
+      "chunk_name": "avgpool",
+      "description": "avgpool/AdaptiveAvgPool2d",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "avgpool",
+      "source_module_target": "avgpool",
+      "op_type": "AdaptiveAvgPool2d",
+      "covered_fx_nodes": [
+        "avgpool"
+      ],
+      "covered_module_targets": [
+        "avgpool"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "InceptionV3 module boundary",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "19",
+      "notes": "",
+      "input_shape": [
+        1,
+        2048,
+        8,
+        8
+      ],
+      "output_shape": [
+        1,
+        2048,
+        1,
+        1
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk18.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk18_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk18_fp16.engine"
+    },
+    {
+      "id": 19,
+      "name": "chunk19",
+      "chunk_name": "dropout",
+      "description": "dropout/Dropout",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "dropout",
+      "source_module_target": "dropout",
+      "op_type": "Dropout",
+      "covered_fx_nodes": [
+        "dropout"
+      ],
+      "covered_module_targets": [
+        "dropout"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "InceptionV3 module boundary",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "20",
+      "notes": "Dropout is identity in eval mode; ONNX export may emit an identity/empty graph.",
+      "input_shape": [
+        1,
+        2048,
+        1,
+        1
+      ],
+      "output_shape": [
+        1,
+        2048,
+        1,
+        1
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk19.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk19_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk19_fp16.engine"
+    },
+    {
+      "id": 20,
+      "name": "chunk20",
+      "chunk_name": "flatten",
+      "description": "flatten/call_function",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "flatten",
+      "source_module_target": "flatten",
+      "op_type": "call_function.flatten",
+      "covered_fx_nodes": [
+        "flatten"
+      ],
+      "covered_module_targets": [
+        "flatten"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "rank-change boundary before classifier",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "21",
+      "notes": "No parameters; exported as a reshape/flatten-only ONNX graph.",
+      "input_shape": [
+        1,
+        2048,
+        1,
+        1
+      ],
+      "output_shape": [
+        1,
+        2048
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk20.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk20_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk20_fp16.engine"
+    },
+    {
+      "id": 21,
+      "name": "chunk21",
+      "chunk_name": "fc",
+      "description": "fc/Linear",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "fc",
+      "source_module_target": "fc",
+      "op_type": "Linear",
+      "covered_fx_nodes": [
+        "fc"
+      ],
+      "covered_module_targets": [
+        "fc"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "InceptionV3 module boundary",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "22",
+      "notes": "",
+      "input_shape": [
+        1,
+        2048
+      ],
+      "output_shape": [
+        1,
+        1000
+      ],
+      "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/chunk21.onnx",
+      "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/chunk21_fp32.engine",
+      "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/chunk21_fp16.engine"
+    }
+  ],
+  "full_model": {
+    "onnx": "artifacts/onnx/inception_v3/dag_aligned_full/full.onnx",
+    "engine_fp32": "artifacts/engines/inception_v3/dag_aligned_full/full_fp32.engine",
+    "engine_fp16": "artifacts/engines/inception_v3/dag_aligned_full/full_fp16.engine"
+  }
+}

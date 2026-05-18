@@ -36,18 +36,28 @@ DEFAULT_X_AXIS_LABEL = "Total utilization U"
 
 DEFAULT_METRICS = [
     "k_split_calls",
-    "k_split_candidate_mask_profiles",
-    "k_split_candidate_masks",
+    "k_split_unique_model_chunks",
+    "k_split_unique_model_masks",
+    "k_split_unique_task_chunks",
+    "k_split_unique_task_masks",
 ]
 
 METRIC_LABELS = {
     "masks_evaluated": "Mask evaluations",
     "real_profiles": "Actual new profiles",
     "cache_hits": "Cache hits",
-    "k_split_calls": "K-split calls",
+    "k_split_calls": "Split function calls (k_split_calls)",
     "k_split_cache_hits": "K-split cache hits",
+    "k_split_unique_model_chunks": "Model-level chunk types (k_split_unique_model_chunks)",
+    "k_split_unique_model_masks": "Model-level mask types (k_split_unique_model_masks)",
+    "k_split_unique_task_chunks": "Task-level chunk types (k_split_unique_task_chunks)",
+    "k_split_unique_task_masks": "Task-level mask types (k_split_unique_task_masks)",
     "k_split_candidate_masks": "Candidate mask profiles (no cache)",
     "k_split_candidate_mask_profiles": "Candidate mask profiles",
+    "k_split_candidate_mask_cold_total_s": "Estimated cold-cache design time (s)",
+    "k_split_candidate_mask_cold_export_s": "Cold-cache export time (s)",
+    "k_split_candidate_mask_cold_build_s": "Cold-cache build time (s)",
+    "k_split_candidate_mask_cold_profile_s": "Cold-cache profile time (s)",
     "k_split_candidate_mask_inference_runs": "Candidate mask inference runs",
     "k_split_candidate_chunk_profiles": "Candidate chunk profiles",
     "k_split_candidate_inference_runs": "Candidate inference runs",
@@ -91,8 +101,8 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=DEFAULT_METRICS,
         help=(
-            "Metric columns to plot. Default: k_split_calls, "
-            "k_split_candidate_mask_profiles, and k_split_candidate_masks."
+            "Metric columns to plot. Default: split calls plus model/task-level "
+            "unique chunk and mask type counters."
         ),
     )
     ap.add_argument(
@@ -118,6 +128,16 @@ def parse_args() -> argparse.Namespace:
         "--x-axis-label",
         default=None,
         help="Override x-axis label; otherwise inferred from run_config.json when available.",
+    )
+    ap.add_argument(
+        "--virtual-profile-iters",
+        type=int,
+        default=None,
+        help=(
+            "Recompute cold-cache total time using a hypothetical profile iteration "
+            "count. Export/build are unchanged; profile time is scaled from run_config "
+            "warmup/iters."
+        ),
     )
     return ap.parse_args()
 
@@ -169,6 +189,8 @@ def load_rows(
     metrics: Sequence[str],
     algorithms: Sequence[str],
     max_utilization: float | None,
+    virtual_profile_iters: int | None = None,
+    profile_scale: float = 1.0,
 ) -> List[dict]:
     allowed = set(algorithms)
     rows: List[dict] = []
@@ -189,13 +211,45 @@ def load_rows(
                 continue
             if max_utilization is not None and util > max_utilization + 1e-12:
                 continue
-            row = {"utilization": util, "algorithm": algorithm}
+            row = {
+                "utilization": util,
+                "algorithm": algorithm,
+                "schedulable": str(raw.get("schedulable", "")).strip().lower()
+                in {"1", "true", "yes"},
+            }
             for metric in metrics:
-                row[metric] = parse_float(raw.get(metric, "0"))
+                if (
+                    metric == "k_split_candidate_mask_cold_total_s"
+                    and virtual_profile_iters is not None
+                ):
+                    export_s = parse_float(raw.get("k_split_candidate_mask_cold_export_s", "0"))
+                    build_s = parse_float(raw.get("k_split_candidate_mask_cold_build_s", "0"))
+                    profile_s = parse_float(raw.get("k_split_candidate_mask_cold_profile_s", "0"))
+                    row[metric] = export_s + build_s + profile_s * profile_scale
+                else:
+                    row[metric] = parse_float(raw.get(metric, "0"))
             rows.append(row)
     if not rows:
         raise ValueError("No matching rows found. Check --algorithms and input CSV.")
     return rows
+
+
+def profile_scale_from_run_config(
+    run_dir: Path,
+    virtual_profile_iters: int | None,
+) -> float:
+    if virtual_profile_iters is None:
+        return 1.0
+    run_config = run_dir / "run_config.json"
+    try:
+        data = json.loads(run_config.read_text())
+        warmup = int(data.get("warmup", 20) or 0)
+        iters = int(data.get("iters", 200) or 0)
+    except Exception:
+        warmup = 20
+        iters = 200
+    denominator = max(1, warmup + iters)
+    return max(0, warmup + int(virtual_profile_iters)) / denominator
 
 
 def parse_float(value: object) -> float:
@@ -343,6 +397,29 @@ def plot_boxplots(
         fig.tight_layout(pad=0.8, rect=(0.03, 0.02, 1.0, 0.94))
         save_both(fig, output_base.with_name(output_base.name + "_boxplot"), dpi)
         plt.close(fig)
+
+
+def plot_unschedulable_boxplots(
+    rows: List[dict],
+    metrics: Sequence[str],
+    algorithms: Sequence[str],
+    output_base: Path,
+    dpi: int,
+    x_axis_label: str,
+) -> None:
+    unschedulable_rows = [row for row in rows if not row["schedulable"]]
+    if not unschedulable_rows:
+        print("[info] skipping unschedulable-only boxplot: no unschedulable rows found")
+        return
+    unschedulable_base = output_base.with_name(output_base.name + "_unschedulable")
+    plot_boxplots(
+        unschedulable_rows,
+        metrics,
+        algorithms,
+        unschedulable_base,
+        dpi,
+        x_axis_label,
+    )
 
 
 def plot_histograms(
@@ -567,11 +644,27 @@ def main() -> int:
     run_dir = resolve_run_dir(args)
     csv_path = resolve_csv(args, run_dir)
     out_dir = resolve_output_dir(args, run_dir)
-    rows = load_rows(csv_path, args.metrics, args.algorithms, args.max_utilization)
+    profile_scale = profile_scale_from_run_config(run_dir, args.virtual_profile_iters)
+    rows = load_rows(
+        csv_path,
+        args.metrics,
+        args.algorithms,
+        args.max_utilization,
+        args.virtual_profile_iters,
+        profile_scale,
+    )
     output_base = out_dir / args.output_prefix
     x_axis_label = infer_x_axis_label(run_dir, args.x_axis_label)
 
     plot_boxplots(rows, args.metrics, args.algorithms, output_base, args.dpi, x_axis_label)
+    plot_unschedulable_boxplots(
+        rows,
+        args.metrics,
+        args.algorithms,
+        output_base,
+        args.dpi,
+        x_axis_label,
+    )
     plot_histograms(rows, args.metrics, args.algorithms, output_base, args.dpi, args.hist_bins)
     plot_histograms_by_utilization(
         rows, args.metrics, args.algorithms, output_base, args.dpi, args.hist_bins

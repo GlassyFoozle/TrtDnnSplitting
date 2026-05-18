@@ -23,7 +23,13 @@ from typing import Iterable, Optional
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-TABLE4_RUNNER = REPO / "cpp_runtime" / "build" / "table4_runner"
+TABLE4_RUNNER = next(
+    (p for p in (
+        REPO / "cpp_runtime" / "build_sync_wall" / "table4_runner",
+        REPO / "cpp_runtime" / "build" / "table4_runner",
+    ) if p.exists()),
+    REPO / "cpp_runtime" / "build_sync_wall" / "table4_runner",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -132,6 +138,7 @@ def _run_table4(config_path: Path, precision: str, warmup: int, iters: int) -> t
         "--precision", precision,
         "--warmup", str(warmup),
         "--iters", str(iters),
+        "--sync-wall",
     ]
     t0 = time.perf_counter()
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -177,9 +184,13 @@ def _update_timing(
         "start_idx": start,
         "end_idx": end,
         "precision": precision,
-        f"gpu_mean_ms_{precision}": ch.get("gpu_mean_ms"),
-        f"gpu_p99_ms_{precision}": ch.get("gpu_p99_ms"),
-        f"gpu_max_ms_{precision}": ch.get("gpu_max_ms"),
+        f"gpu_mean_ms_{precision}": ch.get("cpu_mean_ms"),
+        f"gpu_p99_ms_{precision}": ch.get("cpu_p99_ms"),
+        f"gpu_max_ms_{precision}": ch.get("cpu_max_ms"),
+        f"wall_mean_ms_{precision}": ch.get("cpu_mean_ms"),
+        f"wall_p99_ms_{precision}": ch.get("cpu_p99_ms"),
+        f"wall_max_ms_{precision}": ch.get("cpu_max_ms"),
+        f"timing_basis_{precision}": "cpu_wall_sync",
         f"profile_wall_s_{precision}": profile_wall_s,
         f"profile_warmup_{precision}": int(warmup),
         f"profile_iters_{precision}": int(iters),

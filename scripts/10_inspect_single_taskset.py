@@ -50,6 +50,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from src.integration import run_dnn_rta_algorithm
+from src.integration.split_point_policy import list_policy_names
 
 
 def main():
@@ -82,7 +83,7 @@ def main():
     ap.add_argument("--exact-opt-max-boundaries", type=int, default=0,
                     help="For opt-k: if boundary_count <= N, enumerate all 2^N masks exactly (default: 0 = off)")
     ap.add_argument("--split-policy", default="all",
-                    choices=["all", "paper_like", "stage", "five_points", "ten_points", "major_blocks"],
+                    choices=list_policy_names(),
                     dest="split_policy",
                     help="Split-point policy for paper-style heu/opt (default: all)")
     ap.add_argument("--max-profiles", type=int, default=500,

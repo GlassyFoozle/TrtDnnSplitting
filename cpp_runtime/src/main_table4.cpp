@@ -14,11 +14,15 @@
 
 #include "chunk_pipeline.hpp"
 #include <nlohmann/json.hpp>
+#include <cerrno>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <filesystem>
+#include <sched.h>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -30,6 +34,7 @@ struct Args {
     std::string precision = "fp32";
     int         warmup    = 20;
     int         iters     = 200;
+    bool        sync_wall = false;
 };
 
 static Args parse_args(int argc, char** argv) {
@@ -46,6 +51,8 @@ static Args parse_args(int argc, char** argv) {
             a.warmup = std::stoi(argv[++i]);
         } else if (s == "--iters" && i + 1 < argc) {
             a.iters = std::stoi(argv[++i]);
+        } else if (s == "--sync-wall") {
+            a.sync_wall = true;
         } else {
             std::cerr << "Unknown argument: " << s << "\n";
             std::exit(1);
@@ -65,10 +72,51 @@ static Args parse_args(int argc, char** argv) {
     return a;
 }
 
+static void bind_to_cpu(int cpu) {
+    if (cpu <= 0) {
+        throw std::runtime_error("profiling CPU must be greater than 0");
+    }
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+        throw std::runtime_error(
+            std::string("sched_setaffinity(cpu=") + std::to_string(cpu) +
+            ") failed: " + std::strerror(errno));
+    }
+}
+
+static void enable_sched_fifo(int priority) {
+    int min_priority = sched_get_priority_min(SCHED_FIFO);
+    int max_priority = sched_get_priority_max(SCHED_FIFO);
+    if (min_priority < 0 || max_priority < 0) {
+        throw std::runtime_error(
+            std::string("failed to query SCHED_FIFO priority range: ") + std::strerror(errno));
+    }
+    if (priority < min_priority || priority > max_priority) {
+        throw std::runtime_error(
+            "SCHED_FIFO priority must be in [" + std::to_string(min_priority) +
+            ", " + std::to_string(max_priority) + "]");
+    }
+    sched_param param{};
+    param.sched_priority = priority;
+    if (sched_setscheduler(0, SCHED_FIFO, &param) != 0) {
+        throw std::runtime_error(
+            std::string("sched_setscheduler(SCHED_FIFO) failed: ") + std::strerror(errno) +
+            " (requires root, CAP_SYS_NICE, or an rtprio limit that permits this priority)");
+    }
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
     Args args = parse_args(argc, argv);
+    constexpr int kWallTimeProfilingCpu = 1;
+    constexpr int kWallTimeRtPriority = 80;
+    if (args.sync_wall) {
+        bind_to_cpu(kWallTimeProfilingCpu);
+        enable_sched_fifo(kWallTimeRtPriority);
+    }
 
     // Load config JSON.
     std::ifstream cfg_f(args.config_path);
@@ -87,8 +135,13 @@ int main(int argc, char** argv) {
               << "C++ table4_runner: " << model_name
               << " / " << variant << "  precision=" << args.precision
               << "  chunks=" << n_chunks << "\n"
-              << "  warmup=" << args.warmup << "  iters=" << args.iters << "\n"
-              << std::string(60, '=') << "\n";
+              << "  warmup=" << args.warmup << "  iters=" << args.iters << "\n";
+    if (args.sync_wall) {
+        std::cerr << "  cpu=" << kWallTimeProfilingCpu
+                  << "  scheduler=SCHED_FIFO"
+                  << "  rt_priority=" << kWallTimeRtPriority << "\n";
+    }
+    std::cerr << std::string(60, '=') << "\n";
 
     SilentLogger logger;
 
@@ -99,7 +152,7 @@ int main(int argc, char** argv) {
 
     // Run benchmark.
     std::cerr << "\n[benchmarking...]\n";
-    PipelineResult res = pipeline.run(args.warmup, args.iters);
+    PipelineResult res = pipeline.run(args.warmup, args.iters, args.sync_wall);
 
     // Print summary.
     std::cerr << "\n  full engine GPU mean = " << res.full_engine_gpu_mean_ms << " ms"
@@ -108,6 +161,14 @@ int main(int argc, char** argv) {
     std::cerr << "  chunked total GPU mean = " << res.total_chunked_gpu_mean_ms << " ms"
               << "  p99 = " << res.total_chunked_gpu_p99_ms << " ms"
               << "  max = " << res.total_chunked_gpu_max_ms << " ms\n";
+    if (args.sync_wall) {
+        std::cerr << "  full engine CPU wall mean = " << res.full_engine_cpu_wall_mean_ms << " ms"
+                  << "  p99 = " << res.full_engine_cpu_wall_p99_ms << " ms"
+                  << "  max = " << res.full_engine_cpu_wall_max_ms << " ms\n";
+        std::cerr << "  chunked total CPU wall mean = " << res.total_chunked_cpu_wall_mean_ms << " ms"
+                  << "  p99 = " << res.total_chunked_cpu_wall_p99_ms << " ms"
+                  << "  max = " << res.total_chunked_cpu_wall_max_ms << " ms\n";
+    }
     for (auto& c : res.chunks) {
         std::cerr << "  chunk" << c.id
                   << "  GPU mean=" << c.gpu_mean_ms << " ms"
@@ -123,12 +184,23 @@ int main(int argc, char** argv) {
     out["n_chunks"]                     = n_chunks;
     out["n_warmup"]                     = args.warmup;
     out["n_iters"]                      = res.n_iters;
+    if (args.sync_wall) {
+        out["profiling_cpu"]            = kWallTimeProfilingCpu;
+        out["scheduler_policy"]         = "SCHED_FIFO";
+        out["rt_priority"]              = kWallTimeRtPriority;
+    }
     out["full_engine_gpu_mean_ms"]      = res.full_engine_gpu_mean_ms;
     out["full_engine_gpu_p99_ms"]       = res.full_engine_gpu_p99_ms;
     out["full_engine_gpu_max_ms"]       = res.full_engine_gpu_max_ms;
+    out["full_engine_cpu_wall_mean_ms"] = res.full_engine_cpu_wall_mean_ms;
+    out["full_engine_cpu_wall_p99_ms"]  = res.full_engine_cpu_wall_p99_ms;
+    out["full_engine_cpu_wall_max_ms"]  = res.full_engine_cpu_wall_max_ms;
     out["total_chunked_gpu_mean_ms"]    = res.total_chunked_gpu_mean_ms;
     out["total_chunked_gpu_p99_ms"]     = res.total_chunked_gpu_p99_ms;
     out["total_chunked_gpu_max_ms"]     = res.total_chunked_gpu_max_ms;
+    out["total_chunked_cpu_wall_mean_ms"] = res.total_chunked_cpu_wall_mean_ms;
+    out["total_chunked_cpu_wall_p99_ms"]  = res.total_chunked_cpu_wall_p99_ms;
+    out["total_chunked_cpu_wall_max_ms"]  = res.total_chunked_cpu_wall_max_ms;
 
     nlohmann::json chunk_arr = nlohmann::json::array();
     for (auto& c : res.chunks) {

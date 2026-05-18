@@ -34,6 +34,7 @@ def get_dnnsplitting_dir() -> Path:
 def dnn_task_to_seginftask(
     dnn_task,
     splitting_config: Optional[List[int]] = None,
+    per_splitting_overhead: float = 0.0,
 ) -> object:
     """
     Convert a DNNBackedTask into a DNNSplitting SegInfTask.
@@ -56,7 +57,7 @@ def dnn_task_to_seginftask(
     The returned SegInfTask has:
       - C_list = [cpu_pre_ms, cpu_post_ms]
       - One InferenceSegment backed by current_chunk_times_ms
-      - per_splitting_overhead = 0.0
+      - per_splitting_overhead = per_splitting_overhead
       - splitting_config applied as given (or initial_mask)
       - period, deadline, priority from dnn_task
 
@@ -87,7 +88,7 @@ def dnn_task_to_seginftask(
     seg = InferenceSegment(
         G_segment=dummy_G,
         max_block_count=N,
-        per_splitting_overhead=0.0,
+        per_splitting_overhead=float(per_splitting_overhead),
     )
     # Override with real measured millisecond values
     seg.G_segment = float(sum(base_times))
@@ -99,7 +100,11 @@ def dnn_task_to_seginftask(
     current_times = list(getattr(dnn_task, "current_chunk_times_ms", []) or [])
     expected_k = sum(splitting_config) + 1
     if len(current_times) == expected_k:
-        seg.G_block_list = [float(t) for t in current_times]
+        seg.G_block_list = _with_split_overhead(
+            [float(t) for t in current_times],
+            splitting_config,
+            float(per_splitting_overhead),
+        )
     else:
         seg.G_block_list = seg._compute_block_list()
 
@@ -111,7 +116,7 @@ def dnn_task_to_seginftask(
             "C": float(dnn_task.cpu_pre_ms),
             "G_segment": float(dummy_G),   # dummy; overridden below
             "max_block_count": N,
-            "per_splitting_overhead": 0.0,
+            "per_splitting_overhead": float(per_splitting_overhead),
         },
         {
             "C": float(dnn_task.cpu_post_ms),
@@ -158,6 +163,7 @@ def dnn_task_to_seginftask(
 def build_task_set_dict(
     dnn_tasks,
     splitting_configs: Optional[dict] = None,
+    per_splitting_overhead: float = 0.0,
 ) -> dict:
     """
     Build a DNNSplitting task_set dict from a list of DNNBackedTask.
@@ -167,6 +173,8 @@ def build_task_set_dict(
     dnn_tasks : list of DNNBackedTask
     splitting_configs : dict {task_name: List[int]}, optional
         Per-task splitting config overrides. If None, each task's initial_mask is used.
+    per_splitting_overhead : float
+        Milliseconds added at each active split boundary in analysis.
 
     Returns
     -------
@@ -179,8 +187,28 @@ def build_task_set_dict(
     cpus: dict = {}
     for dt in dnn_tasks:
         cfg = splitting_configs.get(dt.task_name, None)
-        st = dnn_task_to_seginftask(dt, splitting_config=cfg)
+        st = dnn_task_to_seginftask(
+            dt,
+            splitting_config=cfg,
+            per_splitting_overhead=per_splitting_overhead,
+        )
         cpu_key = dt.cpu_id
         cpus.setdefault(cpu_key, []).append(st)
 
     return {"cpus": cpus}
+
+
+def _with_split_overhead(
+    chunk_times: List[float],
+    splitting_config: List[int],
+    overhead_ms: float,
+) -> List[float]:
+    if overhead_ms <= 0.0 or not chunk_times:
+        return list(chunk_times)
+    adjusted = list(chunk_times)
+    chunk_idx = 0
+    for split in splitting_config:
+        if split == 1:
+            adjusted[chunk_idx] += overhead_ms
+            chunk_idx += 1
+    return adjusted

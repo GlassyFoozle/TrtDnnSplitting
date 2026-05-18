@@ -20,9 +20,15 @@ struct PipelineResult {
     double              full_engine_gpu_mean_ms    = 0.0;
     double              full_engine_gpu_p99_ms     = 0.0;
     double              full_engine_gpu_max_ms     = 0.0;
+    double              full_engine_cpu_wall_mean_ms = 0.0;
+    double              full_engine_cpu_wall_p99_ms  = 0.0;
+    double              full_engine_cpu_wall_max_ms  = 0.0;
     double              total_chunked_gpu_mean_ms  = 0.0;
     double              total_chunked_gpu_p99_ms   = 0.0;
     double              total_chunked_gpu_max_ms   = 0.0;
+    double              total_chunked_cpu_wall_mean_ms = 0.0;
+    double              total_chunked_cpu_wall_p99_ms  = 0.0;
+    double              total_chunked_cpu_wall_max_ms  = 0.0;
     int                 n_iters                    = 0;
     std::vector<ChunkStats> chunks;
 };
@@ -37,7 +43,7 @@ public:
     ~ChunkPipeline();
 
     // Run the full pipeline; returns aggregate stats.
-    PipelineResult run(int n_warmup, int n_iters);
+    PipelineResult run(int n_warmup, int n_iters, bool sync_wall = false);
 
 private:
     void _setup_buffers();

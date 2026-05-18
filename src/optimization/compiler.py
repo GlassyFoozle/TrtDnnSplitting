@@ -146,6 +146,9 @@ def build_single_engine(
         "--noDataTransfers",
         "--iterations=100",
     ]
+    builder_opt_level = os.environ.get("TRT_BUILDER_OPT_LEVEL")
+    if builder_opt_level:
+        cmd.append(f"--builderOptimizationLevel={builder_opt_level}")
     if precision == "fp16":
         cmd.append("--fp16")
 
@@ -157,7 +160,8 @@ def build_single_engine(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{onnx_path.stem}_{precision}.log"
 
-    print(f"  [build] {onnx_path.name} -> {engine_path.name}")
+    opt_suffix = f" opt={builder_opt_level}" if builder_opt_level else ""
+    print(f"  [build{opt_suffix}] {onnx_path.name} -> {engine_path.name}", flush=True)
     t0 = time.perf_counter()
     with log_path.open("w") as lf:
         proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)

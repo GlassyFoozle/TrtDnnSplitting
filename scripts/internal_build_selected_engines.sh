@@ -10,6 +10,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TRTEXEC="${TRTEXEC:-/usr/src/tensorrt/bin/trtexec}"
+TRT_BUILDER_OPT_LEVEL="${TRT_BUILDER_OPT_LEVEL:-}"
 LOG_DIR="$REPO/artifacts/logs"
 mkdir -p "$LOG_DIR"
 
@@ -46,7 +47,11 @@ run_trtexec() {
     shift 3
     local extra=("$@")
     mkdir -p "$(dirname "$engine")"
-    local cmd=("$TRTEXEC" "--onnx=$onnx" "--saveEngine=$engine" "--noDataTransfers" "--iterations=100" "${extra[@]}")
+    local opt_args=()
+    if [[ -n "$TRT_BUILDER_OPT_LEVEL" ]]; then
+        opt_args+=("--builderOptimizationLevel=$TRT_BUILDER_OPT_LEVEL")
+    fi
+    local cmd=("$TRTEXEC" "--onnx=$onnx" "--saveEngine=$engine" "--noDataTransfers" "--iterations=100" "${opt_args[@]}" "${extra[@]}")
     echo "  [build] $(basename "$onnx") -> $(basename "$engine")"
     if [[ $DRY_RUN -eq 1 ]]; then
         echo "    DRY-RUN: ${cmd[*]}"

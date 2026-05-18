@@ -7,7 +7,8 @@ Supported models:
   vgg19      — VGG19 (Simonyan 2014), torchvision
   vit_l_16   — Vision Transformer large, patch 16, torchvision
   vit / vit_b_16 — Vision Transformer base, patch 16, torchvision
-                (registry/full-model construction support only in this pass)
+  inception_v3 — InceptionV3, torchvision
+  mobilenet_v3_small — MobileNetV3-Small, torchvision
   inceptionv4 — NOT AVAILABLE: requires timm, which is not installed on this system
                 (JetPack 6.0 / L4T R36.3 environment). Framework is ready; install
                 timm and add an entry here when the dependency becomes available.
@@ -83,21 +84,45 @@ def _make_registry() -> dict:
             constructor=lambda: _with_nonzero_classifier_head(tvm.vit_b_16(weights=None)),
             input_shape=(1, 3, 224, 224),
             notes=(
-                "Vision Transformer B/16, torchvision. Registry/full-model "
-                "construction support only in this pass; dag_aligned_full "
-                "chunking/export/profiling needs transformer-specific wrappers."
+                "Vision Transformer B/16, torchvision; 12 encoder blocks. "
+                "Classifier head is deterministically initialized when weights=None "
+                "to avoid TensorRT constant-output pruning."
             ),
             available=hasattr(tvm, "vit_b_16"),
         ),
         "vit": ModelInfo(
             name="vit",
-            constructor=lambda: tvm.vit_b_16(weights=None).eval(),
+            constructor=lambda: _with_nonzero_classifier_head(tvm.vit_b_16(weights=None)),
+            input_shape=(1, 3, 224, 224),
+            notes="Alias for torchvision vit_b_16.",
+            available=hasattr(tvm, "vit_b_16"),
+        ),
+        "inception_v3": ModelInfo(
+            name="inception_v3",
+            constructor=lambda: _with_nonzero_classifier_head(
+                tvm.inception_v3(
+                    weights=None,
+                    aux_logits=False,
+                    transform_input=False,
+                    init_weights=False,
+                )
+            ),
+            input_shape=(1, 3, 299, 299),
+            notes=(
+                "InceptionV3, torchvision; branch-heavy Mixed blocks. "
+                "Aux logits are disabled for single-output inference chunks."
+            ),
+            available=hasattr(tvm, "inception_v3"),
+        ),
+        "mobilenet_v3_small": ModelInfo(
+            name="mobilenet_v3_small",
+            constructor=lambda: _with_nonzero_classifier_head(tvm.mobilenet_v3_small(weights=None)),
             input_shape=(1, 3, 224, 224),
             notes=(
-                "Alias for torchvision vit_b_16. Registry/full-model construction "
-                "support only in this pass; split materialization is pending."
+                "MobileNetV3-Small, torchvision; depthwise/inverted residual blocks "
+                "with squeeze-excitation and hardswish activations."
             ),
-            available=hasattr(tvm, "vit_b_16"),
+            available=hasattr(tvm, "mobilenet_v3_small"),
         ),
         "inceptionv4": ModelInfo(
             name="inceptionv4",

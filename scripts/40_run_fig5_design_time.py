@@ -29,7 +29,7 @@ sys.path.insert(0, str(REPO))
 from src.integration.dnn_algorithm_runner import DNNAlgorithmResult, run_dnn_rta_algorithm
 from src.integration.dnn_workload_generator import WorkloadConfig, generate_tasksets
 from src.integration.live_budget import LiveProfileBudget
-from src.integration.split_point_policy import get_enabled_boundaries
+from src.integration.split_point_policy import get_enabled_boundaries, list_policy_names
 
 
 def _check_min_free_gb(min_free_gb: float | None) -> None:
@@ -98,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--precision", default="fp32", choices=["fp32", "fp16"])
     ap.add_argument("--wcet-metric", default="max", choices=["max", "p99", "mean"], dest="wcet_metric")
     ap.add_argument("--split-policy", default="five_points",
-                    choices=["all", "paper_like", "stage", "five_points", "ten_points", "major_blocks"])
+                    choices=list_policy_names())
     ap.add_argument("--taskgen-mode", default="dnnsplitting", choices=["legacy", "dnnsplitting"])
     ap.add_argument("--utilization-basis", default="total", choices=["gpu", "total"])
     ap.add_argument("--num-cpus", type=int, default=1)

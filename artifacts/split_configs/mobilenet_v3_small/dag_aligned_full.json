@@ -1,0 +1,762 @@
+{
+  "model": "mobilenet_v3_small",
+  "variant": "dag_aligned_full",
+  "n_chunks": 19,
+  "input_shape": [
+    1,
+    3,
+    224,
+    224
+  ],
+  "dag_summary": {
+    "full_fx": {
+      "n_nodes": 21,
+      "n_edges": 20,
+      "n_skip_edges": 0,
+      "sync_counts": {
+        "e2e": 1,
+        "critical": 20,
+        "wo_skip": 20,
+        "max": 21
+      },
+      "critical_indices": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ]
+    }
+  },
+  "dag_aligned_summary": {
+    "candidate_count": 19,
+    "boundary_count": 18,
+    "materialized_count": 19,
+    "notes": "Generated from src.splitting.dag_aligned_split. ViT models use architecture-defined encoder-block chunks."
+  },
+  "chunks": [
+    {
+      "id": 0,
+      "name": "chunk0",
+      "chunk_name": "features_0",
+      "description": "features.0/Conv2dNormActivation",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_0",
+      "source_module_target": "features.0",
+      "op_type": "Conv2dNormActivation",
+      "covered_fx_nodes": [
+        "features_0"
+      ],
+      "covered_module_targets": [
+        "features.0"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "1",
+      "notes": "",
+      "input_shape": [
+        1,
+        3,
+        224,
+        224
+      ],
+      "output_shape": [
+        1,
+        16,
+        112,
+        112
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk0.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk0_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk0_fp16.engine"
+    },
+    {
+      "id": 1,
+      "name": "chunk1",
+      "chunk_name": "features_1",
+      "description": "features.1/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_1",
+      "source_module_target": "features.1",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_1"
+      ],
+      "covered_module_targets": [
+        "features.1"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "2",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        16,
+        112,
+        112
+      ],
+      "output_shape": [
+        1,
+        16,
+        56,
+        56
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk1.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk1_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk1_fp16.engine"
+    },
+    {
+      "id": 2,
+      "name": "chunk2",
+      "chunk_name": "features_2",
+      "description": "features.2/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_2",
+      "source_module_target": "features.2",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_2"
+      ],
+      "covered_module_targets": [
+        "features.2"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "3",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        16,
+        56,
+        56
+      ],
+      "output_shape": [
+        1,
+        24,
+        28,
+        28
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk2.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk2_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk2_fp16.engine"
+    },
+    {
+      "id": 3,
+      "name": "chunk3",
+      "chunk_name": "features_3",
+      "description": "features.3/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_3",
+      "source_module_target": "features.3",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_3"
+      ],
+      "covered_module_targets": [
+        "features.3"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "4",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        24,
+        28,
+        28
+      ],
+      "output_shape": [
+        1,
+        24,
+        28,
+        28
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk3.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk3_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk3_fp16.engine"
+    },
+    {
+      "id": 4,
+      "name": "chunk4",
+      "chunk_name": "features_4",
+      "description": "features.4/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_4",
+      "source_module_target": "features.4",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_4"
+      ],
+      "covered_module_targets": [
+        "features.4"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "5",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        24,
+        28,
+        28
+      ],
+      "output_shape": [
+        1,
+        40,
+        14,
+        14
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk4.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk4_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk4_fp16.engine"
+    },
+    {
+      "id": 5,
+      "name": "chunk5",
+      "chunk_name": "features_5",
+      "description": "features.5/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_5",
+      "source_module_target": "features.5",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_5"
+      ],
+      "covered_module_targets": [
+        "features.5"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "6",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        40,
+        14,
+        14
+      ],
+      "output_shape": [
+        1,
+        40,
+        14,
+        14
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk5.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk5_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk5_fp16.engine"
+    },
+    {
+      "id": 6,
+      "name": "chunk6",
+      "chunk_name": "features_6",
+      "description": "features.6/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_6",
+      "source_module_target": "features.6",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_6"
+      ],
+      "covered_module_targets": [
+        "features.6"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "7",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        40,
+        14,
+        14
+      ],
+      "output_shape": [
+        1,
+        40,
+        14,
+        14
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk6.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk6_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk6_fp16.engine"
+    },
+    {
+      "id": 7,
+      "name": "chunk7",
+      "chunk_name": "features_7",
+      "description": "features.7/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_7",
+      "source_module_target": "features.7",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_7"
+      ],
+      "covered_module_targets": [
+        "features.7"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "8",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        40,
+        14,
+        14
+      ],
+      "output_shape": [
+        1,
+        48,
+        14,
+        14
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk7.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk7_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk7_fp16.engine"
+    },
+    {
+      "id": 8,
+      "name": "chunk8",
+      "chunk_name": "features_8",
+      "description": "features.8/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_8",
+      "source_module_target": "features.8",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_8"
+      ],
+      "covered_module_targets": [
+        "features.8"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "9",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        48,
+        14,
+        14
+      ],
+      "output_shape": [
+        1,
+        48,
+        14,
+        14
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk8.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk8_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk8_fp16.engine"
+    },
+    {
+      "id": 9,
+      "name": "chunk9",
+      "chunk_name": "features_9",
+      "description": "features.9/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_9",
+      "source_module_target": "features.9",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_9"
+      ],
+      "covered_module_targets": [
+        "features.9"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "10",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        48,
+        14,
+        14
+      ],
+      "output_shape": [
+        1,
+        96,
+        7,
+        7
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk9.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk9_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk9_fp16.engine"
+    },
+    {
+      "id": 10,
+      "name": "chunk10",
+      "chunk_name": "features_10",
+      "description": "features.10/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_10",
+      "source_module_target": "features.10",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_10"
+      ],
+      "covered_module_targets": [
+        "features.10"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "11",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        96,
+        7,
+        7
+      ],
+      "output_shape": [
+        1,
+        96,
+        7,
+        7
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk10.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk10_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk10_fp16.engine"
+    },
+    {
+      "id": 11,
+      "name": "chunk11",
+      "chunk_name": "features_11",
+      "description": "features.11/InvertedResidual",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_11",
+      "source_module_target": "features.11",
+      "op_type": "InvertedResidual",
+      "covered_fx_nodes": [
+        "features_11"
+      ],
+      "covered_module_targets": [
+        "features.11"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "12",
+      "notes": "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add.",
+      "input_shape": [
+        1,
+        96,
+        7,
+        7
+      ],
+      "output_shape": [
+        1,
+        96,
+        7,
+        7
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk11.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk11_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk11_fp16.engine"
+    },
+    {
+      "id": 12,
+      "name": "chunk12",
+      "chunk_name": "features_12",
+      "description": "features.12/Conv2dNormActivation",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "features_12",
+      "source_module_target": "features.12",
+      "op_type": "Conv2dNormActivation",
+      "covered_fx_nodes": [
+        "features_12"
+      ],
+      "covered_module_targets": [
+        "features.12"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, SE, and projection internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "13",
+      "notes": "",
+      "input_shape": [
+        1,
+        96,
+        7,
+        7
+      ],
+      "output_shape": [
+        1,
+        576,
+        7,
+        7
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk12.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk12_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk12_fp16.engine"
+    },
+    {
+      "id": 13,
+      "name": "chunk13",
+      "chunk_name": "avgpool",
+      "description": "avgpool/AdaptiveAvgPool2d",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "avgpool",
+      "source_module_target": "avgpool",
+      "op_type": "AdaptiveAvgPool2d",
+      "covered_fx_nodes": [
+        "avgpool"
+      ],
+      "covered_module_targets": [
+        "avgpool"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "global pooling boundary before classifier",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "14",
+      "notes": "",
+      "input_shape": [
+        1,
+        576,
+        7,
+        7
+      ],
+      "output_shape": [
+        1,
+        576,
+        1,
+        1
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk13.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk13_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk13_fp16.engine"
+    },
+    {
+      "id": 14,
+      "name": "chunk14",
+      "chunk_name": "flatten",
+      "description": "flatten/call_function",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "flatten",
+      "source_module_target": "flatten",
+      "op_type": "call_function.flatten",
+      "covered_fx_nodes": [
+        "flatten"
+      ],
+      "covered_module_targets": [
+        "flatten"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "rank-change boundary before classifier",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "15",
+      "notes": "No parameters; exported as a reshape/flatten-only ONNX graph.",
+      "input_shape": [
+        1,
+        576,
+        1,
+        1
+      ],
+      "output_shape": [
+        1,
+        576
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk14.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk14_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk14_fp16.engine"
+    },
+    {
+      "id": 15,
+      "name": "chunk15",
+      "chunk_name": "classifier_0",
+      "description": "classifier.0/Linear",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "classifier_0",
+      "source_module_target": "classifier.0",
+      "op_type": "Linear",
+      "covered_fx_nodes": [
+        "classifier_0"
+      ],
+      "covered_module_targets": [
+        "classifier.0"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "classifier module boundary",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "16",
+      "notes": "",
+      "input_shape": [
+        1,
+        576
+      ],
+      "output_shape": [
+        1,
+        1024
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk15.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk15_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk15_fp16.engine"
+    },
+    {
+      "id": 16,
+      "name": "chunk16",
+      "chunk_name": "classifier_1",
+      "description": "classifier.1/Hardswish",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "classifier_1",
+      "source_module_target": "classifier.1",
+      "op_type": "Hardswish",
+      "covered_fx_nodes": [
+        "classifier_1"
+      ],
+      "covered_module_targets": [
+        "classifier.1"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "classifier module boundary",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "17",
+      "notes": "",
+      "input_shape": [
+        1,
+        1024
+      ],
+      "output_shape": [
+        1,
+        1024
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk16.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk16_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk16_fp16.engine"
+    },
+    {
+      "id": 17,
+      "name": "chunk17",
+      "chunk_name": "classifier_2",
+      "description": "classifier.2/Dropout",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "classifier_2",
+      "source_module_target": "classifier.2",
+      "op_type": "Dropout",
+      "covered_fx_nodes": [
+        "classifier_2"
+      ],
+      "covered_module_targets": [
+        "classifier.2"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "classifier module boundary",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "18",
+      "notes": "Dropout is identity in eval mode; ONNX export may emit an identity/empty graph.",
+      "input_shape": [
+        1,
+        1024
+      ],
+      "output_shape": [
+        1,
+        1024
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk17.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk17_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk17_fp16.engine"
+    },
+    {
+      "id": 18,
+      "name": "chunk18",
+      "chunk_name": "classifier_3",
+      "description": "classifier.3/Linear",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "classifier_3",
+      "source_module_target": "classifier.3",
+      "op_type": "Linear",
+      "covered_fx_nodes": [
+        "classifier_3"
+      ],
+      "covered_module_targets": [
+        "classifier.3"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "classifier module boundary",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "19",
+      "notes": "",
+      "input_shape": [
+        1,
+        1024
+      ],
+      "output_shape": [
+        1,
+        1000
+      ],
+      "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/chunk18.onnx",
+      "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk18_fp32.engine",
+      "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/chunk18_fp16.engine"
+    }
+  ],
+  "full_model": {
+    "onnx": "artifacts/onnx/mobilenet_v3_small/dag_aligned_full/full.onnx",
+    "engine_fp32": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/full_fp32.engine",
+    "engine_fp16": "artifacts/engines/mobilenet_v3_small/dag_aligned_full/full_fp16.engine"
+  }
+}

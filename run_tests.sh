@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+TABLE4_RUNNER="cpp_runtime/build_sync_wall/table4_runner"
+if ! getcap "$TABLE4_RUNNER" 2>/dev/null | grep -q 'cap_sys_nice'; then
+  echo "Granting cap_sys_nice to $TABLE4_RUNNER (needed for SCHED_FIFO wall-time profiling)..."
+  sudo setcap cap_sys_nice+ep "$TABLE4_RUNNER"
+fi
+
 CONFIG_DIR="${CONFIG_DIR:-configs/yaml/gpu_util_configs}"
 RESULT_LOG_DIR="results"
 PLOT_DIR="results/plots"
-MODELS="${MODELS:-alexnet resnet18 vgg19 vit_l_16}"
+MODELS="${MODELS:-alexnet resnet18 vgg19 vit_b_16}"
 RUN_LABEL="${RUN_LABEL:-fig4_4models}"
 NUM_TASKSETS_OVERRIDE="${NUM_TASKSETS_OVERRIDE:-50}"
 UTILIZATIONS="${UTILIZATIONS:-}"
@@ -19,13 +25,13 @@ mkdir -p "${RESULT_LOG_DIR}" "${PLOT_DIR}"
 
 CONFIGS=(
   "1_base.yaml"
-  "2_C_ratio_00.yaml"
-  "3_C_ratio_25.yaml"
-  "4_C_ratio_50.yaml"
-  "5_task1.yaml"
-  "6_task3.yaml"
-  "7_singleCPU_task4.yaml"
-  "8_singleCPU_task8.yaml"
+  # "2_C_ratio_00.yaml"
+  # "3_C_ratio_25.yaml"
+  # "4_C_ratio_50.yaml"
+  # "5_task1.yaml"
+  # "6_task3.yaml"
+  # "7_singleCPU_task4.yaml"
+  # "8_singleCPU_task8.yaml"
 )
 if [[ -n "${CONFIGS_OVERRIDE}" ]]; then
   read -r -a CONFIGS <<< "${CONFIGS_OVERRIDE}"
@@ -46,13 +52,14 @@ for config_name in "${CONFIGS[@]}"; do
   cmd=(conda run --no-capture-output -n trt python -u scripts/30_run_yaml_fig4_experiment.py \
     --config "${config_path}" \
     --models ${MODELS} \
-    --split-policy major_blocks \
+    --split-policy trt_fusion_safe \
     --algorithm-set "${ALGORITHM_SET}" \
     --num-tasksets-override "${NUM_TASKSETS_OVERRIDE}" \
     --live \
+    --wcet-metric max \
     --max-candidates 1000000 \
     --max-profiles 1000000 \
-    --min-free-gb 50 \
+    --min-free-gb 1 \
     --run-name "${run_name}")
 
   if [[ -n "${UTILIZATIONS}" ]]; then

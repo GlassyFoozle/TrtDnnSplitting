@@ -12,6 +12,7 @@ Policies (from configs/split_point_policies.json):
   "five_points" — exactly five major design-phase boundaries per supported model
   "ten_points" — ten materializable design-phase boundaries per supported model
   "major_blocks" — paper-style major architectural block boundaries
+  Additional policy names may be added directly in the JSON file.
 
 If a model or policy is not in the JSON, defaults to "all" (no restriction).
 """
@@ -38,6 +39,19 @@ def _load_policies() -> Dict:
 
 def _policies_path() -> Path:
     return _POLICIES_PATH
+
+
+def list_policy_names() -> List[str]:
+    """Return every non-metadata policy name defined in the JSON registry."""
+    policies = _load_policies()
+    names = {
+        name
+        for model_policies in policies.values()
+        if isinstance(model_policies, dict)
+        for name in model_policies
+        if not name.startswith("_")
+    }
+    return sorted(names)
 
 
 def get_enabled_boundaries(

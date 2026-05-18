@@ -57,7 +57,13 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 TRTEXEC_DEFAULT = "/usr/src/tensorrt/bin/trtexec"
-TABLE4_RUNNER   = REPO / "cpp_runtime" / "build" / "table4_runner"
+TABLE4_RUNNER   = next(
+    (p for p in (
+        REPO / "cpp_runtime" / "build_sync_wall" / "table4_runner",
+        REPO / "cpp_runtime" / "build" / "table4_runner",
+    ) if p.exists()),
+    REPO / "cpp_runtime" / "build_sync_wall" / "table4_runner",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -177,6 +183,9 @@ def _build_engines(cfg_path: Path, precision: str, force: bool, trtexec_bin: Pat
             "--noDataTransfers",
             "--iterations=100",
         ]
+        builder_opt_level = os.environ.get("TRT_BUILDER_OPT_LEVEL")
+        if builder_opt_level:
+            cmd.append(f"--builderOptimizationLevel={builder_opt_level}")
         if precision == "fp16":
             cmd.append("--fp16")
 
@@ -216,6 +225,7 @@ def _run_table4(
         "--precision", precision,
         "--warmup", str(warmup),
         "--iters",  str(iters),
+        "--sync-wall",
     ]
     print(f"  Running table4_runner for {model_name} ({precision})…")
     t0 = time.time()
@@ -273,9 +283,9 @@ def _print_summary(table4_paths: List[Path], precision: str) -> None:
         data = json.loads(p.read_text())
         model = data.get("model", "?")
         chunks = data.get("chunks", [])
-        mean_sum = sum(c["gpu_mean_ms"] for c in chunks)
-        p99_sum  = sum(c["gpu_p99_ms"]  for c in chunks)
-        max_sum  = sum(c.get("gpu_max_ms", 0.0) for c in chunks)
+        mean_sum = sum(c.get("cpu_mean_ms", c["gpu_mean_ms"]) for c in chunks)
+        p99_sum  = sum(c.get("cpu_p99_ms", c["gpu_p99_ms"]) for c in chunks)
+        max_sum  = sum(c.get("cpu_max_ms", c.get("gpu_max_ms", 0.0)) for c in chunks)
         print(
             f"  {model:<12}  {len(chunks):>4}  "
             f"{mean_sum:>14.4f}  {p99_sum:>13.4f}  {max_sum:>13.4f}"

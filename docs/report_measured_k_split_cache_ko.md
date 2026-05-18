@@ -31,11 +31,13 @@ results/optimization/measured_k_split_cache.json
 `src/integration/mask_applicator.py::apply_k_chunks()`에서 처리한다.
 
 1. cache key를 만든다.
-2. `measured_k_split_cache.json`에 best mask가 있으면 그 mask 하나만 `evaluate_and_apply_mask()`로 적용한다.
+2. `measured_k_split_cache.json`에 best mask와 `selected_chunk_times`가 있으면 그 cached timing을 바로 적용한다.
+   구형 entry처럼 `selected_chunk_times`가 없으면 저장된 mask 하나만 `evaluate_and_apply_mask()`로 적용한다.
 3. cache가 없거나 cached mask 적용이 실패하면 기존처럼 모든 K 후보를 평가한다.
 4. best measured mask를 찾으면 JSON cache에 저장한다.
 
-cache hit 후에도 `evaluate_and_apply_mask()`는 호출한다. 따라서 실제 timing은 기존 TensorRT evaluation cache에서 검증/로드되고, task에는 measured chunk timing이 patch된다.
+신형 cache entry는 `selected_chunk_times`를 함께 저장하므로 cache hit 시 K-cache timing이 source of truth다.
+구형 entry는 `selected_chunk_times`가 없으므로 기존 TensorRT evaluation cache timing으로 fallback한다.
 
 ## force / dry-run 처리
 
@@ -51,6 +53,14 @@ best mask는 다음 tuple을 최소화하는 방식으로 고른다.
 ```
 
 즉 우선순위는 `max_chunk -> total_gpu -> spread`다.
+
+새 entry를 저장할 때 직전 `K-1` entry가 있으면 monotonic envelope를 적용한다.
+
+- `total_gpu`는 K가 커질수록 감소하지 않도록 보정한다.
+- `max_chunk`는 K가 커질수록 증가하지 않도록 보정한다.
+
+보정 전 측정 score는 `measured_score`에 남기고, 보정이 적용된 경우
+`measured_selected_chunk_times`와 `monotonic_adjusted=true`도 함께 저장한다.
 
 ## 검증
 

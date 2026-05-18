@@ -353,6 +353,138 @@ def _vgg19_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
     return _execute_chain_specs(chunks, (1, 3, 224, 224))
 
 
+def _mobilenet_v3_small_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
+    chunks: List[tuple[str, nn.Module, str, List[str], List[str], str, str, str]] = []
+
+    for i, layer in enumerate(model.features):
+        target = f"features.{i}"
+        fx = f"features_{i}"
+        op = _module_op_name(layer)
+        reason = (
+            "MobileNetV3 feature block boundary; Conv/BN/activation, depthwise, "
+            "SE, and projection internals remain grouped"
+        )
+        notes = ""
+        if op == "InvertedResidual":
+            notes = "Contains expansion/depthwise/projection path and optional squeeze-excitation/residual add."
+        chunks.append((
+            fx,
+            _SingleModule(layer),
+            f"{target}/{op}",
+            [fx],
+            [target],
+            op,
+            reason,
+            notes,
+        ))
+
+    chunks.append((
+        "avgpool",
+        _SingleModule(model.avgpool),
+        "avgpool/AdaptiveAvgPool2d",
+        ["avgpool"],
+        ["avgpool"],
+        _module_op_name(model.avgpool),
+        "global pooling boundary before classifier",
+        "",
+    ))
+    chunks.append((
+        "flatten",
+        _Flatten(),
+        "flatten/call_function",
+        ["flatten"],
+        ["flatten"],
+        "call_function.flatten",
+        "rank-change boundary before classifier",
+        "No parameters; exported as a reshape/flatten-only ONNX graph.",
+    ))
+
+    for i, layer in enumerate(model.classifier):
+        target = f"classifier.{i}"
+        fx = f"classifier_{i}"
+        op = _module_op_name(layer)
+        notes = ""
+        if isinstance(layer, nn.Dropout):
+            notes = "Dropout is identity in eval mode; ONNX export may emit an identity/empty graph."
+        chunks.append((
+            fx,
+            _SingleModule(layer),
+            f"{target}/{op}",
+            [fx],
+            [target],
+            op,
+            "classifier module boundary",
+            notes,
+        ))
+
+    return _execute_chain_specs(chunks, (1, 3, 224, 224))
+
+
+def _inception_v3_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
+    chunk_names = [
+        "Conv2d_1a_3x3",
+        "Conv2d_2a_3x3",
+        "Conv2d_2b_3x3",
+        "maxpool1",
+        "Conv2d_3b_1x1",
+        "Conv2d_4a_3x3",
+        "maxpool2",
+        "Mixed_5b",
+        "Mixed_5c",
+        "Mixed_5d",
+        "Mixed_6a",
+        "Mixed_6b",
+        "Mixed_6c",
+        "Mixed_6d",
+        "Mixed_6e",
+        "Mixed_7a",
+        "Mixed_7b",
+        "Mixed_7c",
+        "avgpool",
+        "dropout",
+        "flatten",
+        "fc",
+    ]
+    chunks: List[tuple[str, nn.Module, str, List[str], List[str], str, str, str]] = []
+
+    for name in chunk_names:
+        if name == "flatten":
+            chunks.append((
+                "flatten",
+                _Flatten(),
+                "flatten/call_function",
+                ["flatten"],
+                ["flatten"],
+                "call_function.flatten",
+                "rank-change boundary before classifier",
+                "No parameters; exported as a reshape/flatten-only ONNX graph.",
+            ))
+            continue
+        layer = getattr(model, name)
+        op = _module_op_name(layer)
+        reason = "InceptionV3 module boundary"
+        notes = ""
+        if name.startswith("Mixed_"):
+            reason = "Inception mixed-block boundary; branch internals remain grouped"
+            notes = "Contains parallel convolution/pooling branches and concat; split only at block output."
+        elif name.startswith("Conv2d_"):
+            reason = "BasicConv2d boundary; Conv/BN/ReLU internals remain grouped"
+        elif isinstance(layer, nn.Dropout):
+            notes = "Dropout is identity in eval mode; ONNX export may emit an identity/empty graph."
+        chunks.append((
+            name,
+            _SingleModule(layer),
+            f"{name}/{op}",
+            [_fx_names_for_targets([name])[0]],
+            [name],
+            op,
+            reason,
+            notes,
+        ))
+
+    return _execute_chain_specs(chunks, (1, 3, 299, 299))
+
+
 def _resnet18_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
     specs: List[DagAlignedChunkSpec] = []
     for idx, (module, in_shape, out_shape, desc, crit_target) in enumerate(
@@ -385,14 +517,14 @@ def _resnet18_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
     return specs
 
 
-def _vit_l_16_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
+def _vit_16_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
     """
-    ViT-L/16 split universe.
+    ViT/16 split universe.
 
     Base chunks follow architecture-defined transformer units:
       0       patch projection + class token + positional embedding
-      1..24   encoder.layers.encoder_layer_{0..23}
-      25      final encoder norm + class-token classifier head
+      1..N    encoder.layers.encoder_layer_{0..N-1}
+      N+1     final encoder norm + class-token classifier head
 
     Splitting inside an encoder block is intentionally avoided because MHSA,
     MLP, residual adds, and layer norms form a coupled semantic unit.
@@ -437,9 +569,21 @@ def _vit_l_16_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
     return _execute_chain_specs(chunks, (1, 3, 224, 224))
 
 
+def _vit_l_16_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
+    return _vit_16_dag_aligned(model)
+
+
+def _vit_b_16_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
+    return _vit_16_dag_aligned(model)
+
+
 _DAG_ALIGNED_CHUNKERS: dict[str, Callable[[nn.Module], List[DagAlignedChunkSpec]]] = {
     "alexnet": _alexnet_dag_aligned,
+    "inception_v3": _inception_v3_dag_aligned,
+    "mobilenet_v3_small": _mobilenet_v3_small_dag_aligned,
     "resnet18": _resnet18_dag_aligned,
+    "vit": _vit_b_16_dag_aligned,
+    "vit_b_16": _vit_b_16_dag_aligned,
     "vit_l_16": _vit_l_16_dag_aligned,
     "vgg19": _vgg19_dag_aligned,
 }

@@ -19,7 +19,7 @@ sys.path.insert(0, str(REPO))
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Generate dag_aligned_full split configs.")
-    ap.add_argument("--models", nargs="+", default=["alexnet", "resnet18", "vgg19", "vit_l_16"])
+    ap.add_argument("--models", nargs="+", default=["alexnet", "resnet18", "vgg19", "vit_b_16"])
     ap.add_argument("--force", action="store_true", help="Overwrite existing configs")
     return ap.parse_args()
 

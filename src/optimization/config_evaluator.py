@@ -48,7 +48,11 @@ from typing import List, Optional, Tuple
 REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO))
 
-_CPP_RUNNER = REPO / "cpp_runtime" / "build" / "table4_runner"
+_CPP_RUNNER_CANDIDATES = (
+    REPO / "cpp_runtime" / "build_sync_wall" / "table4_runner",
+    REPO / "cpp_runtime" / "build" / "table4_runner",
+)
+_CPP_RUNNER = next((p for p in _CPP_RUNNER_CANDIDATES if p.exists()), _CPP_RUNNER_CANDIDATES[0])
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -83,6 +87,7 @@ class EvaluationResult:
     chunked_gpu_max_ms: Optional[float] = None
     overhead_ms: Optional[float] = None
     overhead_pct: Optional[float] = None
+    timing_basis: str = "cpu_wall_sync"
 
     # Per-chunk timing lists (indexed by merged-chunk id)
     per_chunk_gpu_mean_ms: Optional[List[float]] = None
@@ -293,17 +298,18 @@ def _export_chunks_with_interval_cache(
     total_wall = 0.0
 
     if not needs_export:
-        print(f"  [interval_cache] all {len(groups)} ONNX(es) from interval cache")
+        print(f"  [interval_cache] all {len(groups)} ONNX(es) from interval cache", flush=True)
         return cache_hits, cache_misses, total_wall
 
     if cache_hits > 0:
-        print(f"  [interval_cache] {cache_hits}/{len(groups)} ONNX(es) from interval cache")
+        print(f"  [interval_cache] {cache_hits}/{len(groups)} ONNX(es) from interval cache", flush=True)
 
     # Load base model once for all missing chunk exports
     model = build_model(model_name)
     base_specs = make_dag_aligned_chunks(model_name, model)
 
-    for i in needs_export:
+    export_total = len(needs_export)
+    for export_idx, i in enumerate(needs_export, start=1):
         grp = groups[i]
         chunk_cfg = chunk_configs[i]
         onnx_path = REPO / chunk_cfg["onnx"]  # interval cache path
@@ -312,7 +318,10 @@ def _export_chunks_with_interval_cache(
         base_modules = [base_specs[j].module for j in grp]
         merged_mod, _ = build_merged_module(base_modules, in_shape)
 
-        print(f"  [export] chunk{i} base_chunks={grp}")
+        print(
+            f"  [export {export_idx}/{export_total}] chunk{i} base_chunks={grp}",
+            flush=True,
+        )
         t0 = time.perf_counter()
         onnx_path.parent.mkdir(parents=True, exist_ok=True)
         export_module(merged_mod, in_shape, onnx_path, device=device)
@@ -357,9 +366,19 @@ def _build_engines_with_interval_cache(
 
         if not force and eng_path.exists():
             hits += 1
-            print(f"  [interval_cache] chunk{i} engine from cache (base_chunks={grp})")
+            print(
+                f"  [engine {i + 1}/{len(groups)}] cache hit chunk{i} "
+                f"(base_chunks={grp})",
+                flush=True,
+            )
         else:
             # Cache miss: build directly into the interval cache directory.
+            action = "rebuild" if force else "build"
+            print(
+                f"  [engine {i + 1}/{len(groups)}] {action} chunk{i} "
+                f"(base_chunks={grp})",
+                flush=True,
+            )
             eng_path.parent.mkdir(parents=True, exist_ok=True)
             ok, wall = build_single_engine(onnx_path, eng_path, precision=precision)
             total_wall += wall
@@ -371,9 +390,10 @@ def _build_engines_with_interval_cache(
             _save_interval_timing(model_name, grp, timing)
 
     if misses > 0:
-        print(f"  [interval_cache] {hits}/{len(groups)} engine(s) from cache, {misses} built")
+        action = "rebuilt" if force else "built"
+        print(f"  [interval_cache] {hits}/{len(groups)} engine(s) from cache, {misses} {action}", flush=True)
     elif hits > 0:
-        print(f"  [interval_cache] all {hits}/{len(groups)} engine(s) from interval cache")
+        print(f"  [interval_cache] all {hits}/{len(groups)} engine(s) from interval cache", flush=True)
     return hits, misses, total_wall
 
 
@@ -403,7 +423,7 @@ def _estimate_cold_cost(
     }
 
 
-# ── Interval GPU timing helpers ────────────────────────────────────────────────
+# ── Interval timing helpers ────────────────────────────────────────────────────
 
 def _backfill_interval_gpu_timing(
     model_name: str,
@@ -411,7 +431,7 @@ def _backfill_interval_gpu_timing(
     precision: str,
     result: "EvaluationResult",
 ) -> None:
-    """After profiling, write per-chunk GPU timing into each interval's timing.json.
+    """After profiling, write per-chunk wall timing into each interval's timing.json.
 
     This enables cache-only assembly (Task D): once all required intervals for a
     mask have gpu_mean_ms + gpu_p99_ms + gpu_max_ms, the mask can be served
@@ -432,9 +452,13 @@ def _backfill_interval_gpu_timing(
             "precision":       precision,
             f"gpu_mean_ms_{precision}": means[i],
             f"gpu_p99_ms_{precision}":  p99s[i] if i < len(p99s) else means[i],
+            f"wall_mean_ms_{precision}": means[i],
+            f"wall_p99_ms_{precision}":  p99s[i] if i < len(p99s) else means[i],
+            f"timing_basis_{precision}": "cpu_wall_sync",
         }
         if i < len(maxs) and maxs[i] is not None:
             update[f"gpu_max_ms_{precision}"] = maxs[i]
+            update[f"wall_max_ms_{precision}"] = maxs[i]
         if result.profile_wall_s is not None:
             update[f"source_eval_profile_wall_s_{precision}"] = result.profile_wall_s
         if result.profile_warmup is not None:
@@ -443,6 +467,28 @@ def _backfill_interval_gpu_timing(
             update[f"profile_iters_{precision}"] = result.profile_iters
         t.update(update)
         _save_interval_timing(model_name, grp, t)
+
+
+def _inflate_new_profile_intervals_and_refresh_result(
+    model_name: str,
+    groups: List[List[int]],
+    precision: str,
+    result: "EvaluationResult",
+) -> None:
+    """Propagate ratio inflation from newly profiled intervals, then reload maxes."""
+    from src.optimization.monotonic_interval_repair import inflate_children_by_parent_ratio
+
+    # A freshly measured interval may be either a new parent or an existing
+    # child whose old adjusted value was overwritten by raw timing, so rebuild
+    # the model's interval envelope once from top to bottom.
+    inflate_children_by_parent_ratio(model_name, precision)
+    maxs = [
+        float(_load_interval_timing(model_name, grp)[f"wall_max_ms_{precision}"])
+        for grp in groups
+    ]
+    result.per_chunk_gpu_max_ms = maxs
+    result.per_chunk_cpu_wall_max_ms = maxs
+    result.chunked_gpu_max_ms = sum(maxs)
 
 
 def can_assemble_from_intervals(
@@ -458,9 +504,9 @@ def can_assemble_from_intervals(
     for grp in groups:
         t = _load_interval_timing(model_name, grp)
         if not (
-            t.get(f"gpu_mean_ms_{precision}")
-            and t.get(f"gpu_p99_ms_{precision}")
-            and t.get(f"gpu_max_ms_{precision}")
+            (t.get(f"wall_mean_ms_{precision}") or t.get(f"gpu_mean_ms_{precision}"))
+            and (t.get(f"wall_p99_ms_{precision}") or t.get(f"gpu_p99_ms_{precision}"))
+            and (t.get(f"wall_max_ms_{precision}") or t.get(f"gpu_max_ms_{precision}"))
         ):
             return False
     return True
@@ -487,9 +533,9 @@ def assemble_from_intervals(
     maxs  = []
     for grp in groups:
         t = _load_interval_timing(model_name, grp)
-        means.append(float(t.get(f"gpu_mean_ms_{precision}", 0.0)))
-        p99s.append(float(t.get(f"gpu_p99_ms_{precision}", 0.0)))
-        maxs.append(float(t.get(f"gpu_max_ms_{precision}", 0.0)))
+        means.append(float(t.get(f"wall_mean_ms_{precision}", t.get(f"gpu_mean_ms_{precision}", 0.0))))
+        p99s.append(float(t.get(f"wall_p99_ms_{precision}", t.get(f"gpu_p99_ms_{precision}", 0.0))))
+        maxs.append(float(t.get(f"wall_max_ms_{precision}", t.get(f"gpu_max_ms_{precision}", 0.0))))
 
     chunked_mean = sum(means) if means else None
     chunked_p99  = sum(p99s)  if p99s  else None
@@ -514,6 +560,7 @@ def assemble_from_intervals(
         per_chunk_gpu_p99_ms=p99s,
         per_chunk_gpu_max_ms=maxs,
         notes="assembled_from_interval_timing",
+        timing_basis="cpu_wall_sync",
     )
     out = _save_result(result)
     result.result_json_path = str(out.relative_to(REPO))
@@ -544,9 +591,9 @@ def backfill_interval_gpu_timing_from_evals(
         if d.get("error"):
             continue
         mask  = d.get("mask", [])
-        means = d.get("per_chunk_gpu_mean_ms") or []
-        p99s  = d.get("per_chunk_gpu_p99_ms")  or []
-        maxs  = d.get("per_chunk_gpu_max_ms")  or []
+        means = d.get("per_chunk_cpu_wall_mean_ms") or d.get("per_chunk_gpu_mean_ms") or []
+        p99s  = d.get("per_chunk_cpu_wall_p99_ms") or d.get("per_chunk_gpu_p99_ms")  or []
+        maxs  = d.get("per_chunk_cpu_wall_max_ms") or d.get("per_chunk_gpu_max_ms")  or []
         if not mask or not means:
             continue
         groups = compute_merge_groups(mask)
@@ -554,9 +601,9 @@ def backfill_interval_gpu_timing_from_evals(
             continue
         for i, grp in enumerate(groups):
             t = _load_interval_timing(model_name, grp)
-            key_mean = f"gpu_mean_ms_{precision}"
-            key_p99  = f"gpu_p99_ms_{precision}"
-            key_max  = f"gpu_max_ms_{precision}"
+            key_mean = f"wall_mean_ms_{precision}"
+            key_p99  = f"wall_p99_ms_{precision}"
+            key_max  = f"wall_max_ms_{precision}"
             if t.get(key_mean) is None or (maxs and t.get(key_max) is None):
                 update = {
                     "model":            model_name,
@@ -632,6 +679,24 @@ def _save_result(result: EvaluationResult) -> Path:
     return out
 
 
+def _refresh_cached_result_maxes_from_intervals(result: EvaluationResult) -> EvaluationResult:
+    """Keep exact eval-cache hits aligned with the current interval envelope."""
+    maxs: list[float] = []
+    for grp in result.groups:
+        timing = _load_interval_timing(result.model_name, grp)
+        value = timing.get(f"wall_max_ms_{result.precision}")
+        if value is None:
+            return result
+        maxs.append(float(value))
+    if not maxs or result.per_chunk_gpu_max_ms == maxs:
+        return result
+    result.per_chunk_gpu_max_ms = maxs
+    result.per_chunk_cpu_wall_max_ms = maxs
+    result.chunked_gpu_max_ms = sum(maxs)
+    _save_result(result)
+    return result
+
+
 # ── C++ profiler ───────────────────────────────────────────────────────────────
 
 def _run_cpp_profiler(
@@ -661,6 +726,7 @@ def _run_cpp_profiler(
         "--precision", precision,
         "--warmup", str(warmup),
         "--iters", str(iters),
+        "--sync-wall",
     ]
 
     print(f"  [evaluator] Running C++ profiler: {model_name}/{variant_name} ({precision})")
@@ -689,10 +755,11 @@ def _parse_cpp_result(json_path: Path) -> dict:
     """Parse C++ table4_runner output JSON into a timing dict."""
     d = json.loads(json_path.read_text())
     chunks = d.get("chunks", [])
+    has_sync_wall = d.get("total_chunked_cpu_wall_max_ms") not in (None, 0.0)
     # C++ runner returns 0.0 for the full engine when it isn't present → treat as None
-    full_mean = d.get("full_engine_gpu_mean_ms") or None
-    full_p99  = d.get("full_engine_gpu_p99_ms")  or None
-    full_max  = d.get("full_engine_gpu_max_ms")  or None
+    full_mean = (d.get("full_engine_cpu_wall_mean_ms") if has_sync_wall else d.get("full_engine_gpu_mean_ms")) or None
+    full_p99  = (d.get("full_engine_cpu_wall_p99_ms") if has_sync_wall else d.get("full_engine_gpu_p99_ms"))  or None
+    full_max  = (d.get("full_engine_cpu_wall_max_ms") if has_sync_wall else d.get("full_engine_gpu_max_ms"))  or None
     if full_mean is not None and full_mean <= 0.0:
         full_mean = None
         full_p99  = None
@@ -701,12 +768,12 @@ def _parse_cpp_result(json_path: Path) -> dict:
         "full_gpu_mean_ms": full_mean,
         "full_gpu_p99_ms": full_p99,
         "full_gpu_max_ms": full_max,
-        "chunked_gpu_mean_ms": d.get("total_chunked_gpu_mean_ms"),
-        "chunked_gpu_p99_ms": d.get("total_chunked_gpu_p99_ms"),
-        "chunked_gpu_max_ms": d.get("total_chunked_gpu_max_ms"),
-        "per_chunk_gpu_mean_ms": [c["gpu_mean_ms"] for c in chunks],
-        "per_chunk_gpu_p99_ms": [c["gpu_p99_ms"] for c in chunks],
-        "per_chunk_gpu_max_ms": [c.get("gpu_max_ms") for c in chunks],
+        "chunked_gpu_mean_ms": d.get("total_chunked_cpu_wall_mean_ms") if has_sync_wall else d.get("total_chunked_gpu_mean_ms"),
+        "chunked_gpu_p99_ms": d.get("total_chunked_cpu_wall_p99_ms") if has_sync_wall else d.get("total_chunked_gpu_p99_ms"),
+        "chunked_gpu_max_ms": d.get("total_chunked_cpu_wall_max_ms") if has_sync_wall else d.get("total_chunked_gpu_max_ms"),
+        "per_chunk_gpu_mean_ms": [c["cpu_mean_ms"] if has_sync_wall else c["gpu_mean_ms"] for c in chunks],
+        "per_chunk_gpu_p99_ms": [c["cpu_p99_ms"] if has_sync_wall else c["gpu_p99_ms"] for c in chunks],
+        "per_chunk_gpu_max_ms": [c.get("cpu_max_ms") if has_sync_wall else c.get("gpu_max_ms") for c in chunks],
         "per_chunk_cpu_wall_mean_ms": [c.get("cpu_mean_ms") for c in chunks],
         "per_chunk_cpu_wall_p99_ms": [c.get("cpu_p99_ms") for c in chunks],
         "per_chunk_cpu_wall_max_ms": [c.get("cpu_max_ms") for c in chunks],
@@ -864,6 +931,7 @@ def evaluate_mask(
     if not force and not dry_run:
         cached = _load_cached_result(model_name, variant_name, precision)
         if cached is not None and cached.ok():
+            cached = _refresh_cached_result_maxes_from_intervals(cached)
             print(f"  → cache hit (result JSON exists)")
             return cached
 
@@ -978,14 +1046,9 @@ def evaluate_mask(
 
     # Python fallback
     if timing is None:
-        timing = _run_python_profiler(model_name, variant_name, precision, warmup, iters)
-        if timing is not None:
-            result.profiled = True
-            result.notes = (result.notes + "; python_trt_fallback").lstrip("; ")
-        else:
-            result.error = "All profilers failed"
-            _save_result(result)
-            return result
+        result.error = "CPU wall-time profiling requires the C++ table4_runner"
+        _save_result(result)
+        return result
 
     result.profile_wall_s = time.perf_counter() - t0_profile
     result.profile_warmup = int(warmup)
@@ -1004,9 +1067,11 @@ def evaluate_mask(
     result.per_chunk_cpu_wall_mean_ms = timing.get("per_chunk_cpu_wall_mean_ms")
     result.per_chunk_cpu_wall_p99_ms = timing.get("per_chunk_cpu_wall_p99_ms")
     result.per_chunk_cpu_wall_max_ms = timing.get("per_chunk_cpu_wall_max_ms")
+    result.timing_basis = "cpu_wall_sync"
 
     # Backfill per-interval GPU timing so cache-only mode can assemble masks.
     _backfill_interval_gpu_timing(model_name, groups, precision, result)
+    _inflate_new_profile_intervals_and_refresh_result(model_name, groups, precision, result)
 
     if result.full_gpu_mean_ms and result.chunked_gpu_mean_ms:
         result.overhead_ms = result.chunked_gpu_mean_ms - result.full_gpu_mean_ms

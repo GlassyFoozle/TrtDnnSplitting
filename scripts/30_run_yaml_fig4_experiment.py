@@ -29,6 +29,7 @@ import io
 import importlib.util
 import json
 import math
+import os
 import sys
 import time
 from collections import defaultdict
@@ -42,6 +43,7 @@ sys.path.insert(0, str(REPO))
 from src.integration.dnn_algorithm_runner import run_dnn_rta_algorithm
 from src.integration.dnn_workload_generator import WorkloadConfig, generate_tasksets
 from src.integration.live_budget import LiveProfileBudget
+from src.integration.split_point_policy import list_policy_names
 
 
 def _check_min_free_gb(min_free_gb: float | None) -> None:
@@ -138,13 +140,30 @@ def parse_args() -> argparse.Namespace:
         description="Run a YAML-driven Fig.4-style DNN schedulability experiment"
     )
     ap.add_argument("--config", required=True, help="DNNSplitting-style YAML config")
-    ap.add_argument("--models", nargs="+", default=["alexnet", "resnet18", "vgg19", "vit_l_16"])
+    ap.add_argument("--models", nargs="+", default=["alexnet", "resnet18", "vgg19", "vit_b_16"])
     ap.add_argument(
         "--split-policy",
         default="major_blocks",
-        choices=["all", "paper_like", "stage", "five_points", "ten_points", "major_blocks"],
+        choices=list_policy_names(),
     )
     ap.add_argument("--precision", default="fp32", choices=["fp32", "fp16"])
+    ap.add_argument(
+        "--builder-optimization-level",
+        type=int,
+        default=None,
+        choices=range(0, 6),
+        metavar="{0..5}",
+        help="Pass --builderOptimizationLevel=N to trtexec for live engine builds.",
+    )
+    ap.add_argument(
+        "--force-profile",
+        action="store_true",
+        default=False,
+        help=(
+            "In live mode, ignore existing eval JSON/interval timing cache and rebuild/reprofile "
+            "each evaluated mask. Use this when changing precision or TensorRT build options."
+        ),
+    )
     ap.add_argument("--wcet-metric", default="max", choices=["max", "p99", "mean"], dest="wcet_metric")
     ap.add_argument("--dry-run", action="store_true", default=True)
     ap.add_argument("--live", action="store_true", default=False)
@@ -168,12 +187,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     ap.add_argument(
+        "--num-tasksets",
         "--num-tasksets-override",
         "--n-tasksets-override",
         dest="num_tasksets_override",
         type=int,
         default=None,
-        help="Override YAML n_task_sets for smoke tests",
+        help=(
+            "Use this many tasksets per utilization instead of YAML n_task_sets. "
+            "With --existing-taskset-root, runs the first N sorted taskset files."
+        ),
     )
     ap.add_argument(
         "--utilizations",
@@ -206,6 +229,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Print evaluator cache/build messages verbosely instead of compact progress updates.",
+    )
+    ap.add_argument(
+        "--monotonic-k-split-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Store monotonic-adjusted K-split cache timings. "
+            "Use --no-monotonic-k-split-cache to keep raw measured timings."
+        ),
     )
     ap.add_argument(
         "--algorithm-set",
@@ -523,6 +555,10 @@ def generate_yaml_tasksets(
     entries: List[TasksetEntry] = []
     for util_idx, utilization in enumerate(mapping["utilizations"]):
         util_dir = root / util_dir_name(float(utilization))
+        # A rerun may reuse the same run directory with a smaller taskset count.
+        # Remove stale generated files so the on-disk artifacts match this run.
+        for stale_path in util_dir.glob("taskset_*.json"):
+            stale_path.unlink()
         cfg = WorkloadConfig(
             models=args.models,
             n_tasks=int(mapping["num_tasks"]),
@@ -561,6 +597,7 @@ def generate_yaml_tasksets(
             ),
             max_block_count_range=tuple(int(v) for v in mapping["max_block_count_range"]),
             profile_missing_k1=bool(args.live),
+            force_profile_k1=bool(args.force_profile),
             warmup=int(args.warmup),
             iters=int(args.iters),
         )
@@ -685,8 +722,15 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
             "avg_k_split_candidate_mask_profiles": avg(items, "k_split_candidate_mask_profiles"),
             "avg_k_split_candidate_mask_inference_runs": avg(items, "k_split_candidate_mask_inference_runs"),
+            "avg_k_split_candidate_chunk_profiles_with_reuse": avg(
+                items, "k_split_candidate_chunk_profiles_with_reuse"
+            ),
             "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
             "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
+            "avg_k_split_unique_model_chunks": avg(items, "k_split_unique_model_chunks"),
+            "avg_k_split_unique_model_masks": avg(items, "k_split_unique_model_masks"),
+            "avg_k_split_unique_task_chunks": avg(items, "k_split_unique_task_chunks"),
+            "avg_k_split_unique_task_masks": avg(items, "k_split_unique_task_masks"),
             "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
             "avg_early_stop_optimistic_deadline_misses": avg(
                 items, "early_stop_optimistic_deadline_misses"
@@ -717,8 +761,15 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
             "avg_k_split_candidate_mask_profiles": avg(items, "k_split_candidate_mask_profiles"),
             "avg_k_split_candidate_mask_inference_runs": avg(items, "k_split_candidate_mask_inference_runs"),
+            "avg_k_split_candidate_chunk_profiles_with_reuse": avg(
+                items, "k_split_candidate_chunk_profiles_with_reuse"
+            ),
             "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
             "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
+            "avg_k_split_unique_model_chunks": avg(items, "k_split_unique_model_chunks"),
+            "avg_k_split_unique_model_masks": avg(items, "k_split_unique_model_masks"),
+            "avg_k_split_unique_task_chunks": avg(items, "k_split_unique_task_chunks"),
+            "avg_k_split_unique_task_masks": avg(items, "k_split_unique_task_masks"),
             "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
             "avg_early_stop_optimistic_deadline_misses": avg(
                 items, "early_stop_optimistic_deadline_misses"
@@ -1044,6 +1095,11 @@ def _progress_bar(done: int, total: int, width: int = 28) -> str:
     return "[" + "#" * filled + "-" * (width - filled) + "]"
 
 
+def _print_compact_event(message: str) -> None:
+    stream = getattr(sys, "__stdout__", None) or sys.stdout
+    print(message, file=stream, flush=True)
+
+
 def _render_progress(
     done: int,
     total: int,
@@ -1054,6 +1110,8 @@ def _render_progress(
     status: str,
     split: str,
     masks: int,
+    split_calls: int,
+    split_candidates: int,
     cache_hits: int,
     real_profiles: int,
     path: Path,
@@ -1063,7 +1121,8 @@ def _render_progress(
         f"\r\033[K{_progress_bar(done, total)} {done:4d}/{total:<4d} "
         f"{pct:5.1f}% | taskset {taskset_idx:3d}/{taskset_total:<3d} "
         f"U={util:.2f} | {label:14s} {status:5s} {split:8s} "
-        f"masks={masks:4d} cache={cache_hits:4d} real={real_profiles:3d} | "
+        f"masks={masks:4d} split_fn={split_calls:4d} "
+        f"cand={split_candidates:6d} cache={cache_hits:4d} real={real_profiles:3d} | "
         f"{_compact_path(path)}"
     )
     sys.stdout.write(line)
@@ -1072,6 +1131,11 @@ def _render_progress(
 
 def main() -> int:
     args = parse_args()
+    if args.builder_optimization_level is not None:
+        os.environ["TRT_BUILDER_OPT_LEVEL"] = str(args.builder_optimization_level)
+        print(f"TensorRT builderOptimizationLevel={args.builder_optimization_level}", flush=True)
+    if args.force_profile and not args.live:
+        print("[warn] --force-profile has no effect without --live", flush=True)
     dry_run = not args.live
     config_path = resolve_config_path(args.config)
     yaml_data = parse_simple_yaml(config_path)
@@ -1101,18 +1165,26 @@ def main() -> int:
     print(f"Config: {config_path}", flush=True)
     print(f"Mode: {'live/cache-first' if args.live else 'dry-run'}", flush=True)
     print(f"Models: {args.models}", flush=True)
+    print(f"Precision: {args.precision}", flush=True)
     print(f"Split policy: {args.split_policy}", flush=True)
+    print(f"Force live profile/rebuild: {args.force_profile}", flush=True)
     print(f"Algorithm set: {args.algorithm_set}", flush=True)
     print(f"Algorithms: {[label for _, _, label in algorithm_list]}", flush=True)
     print(f"Utilizations: {mapping['utilizations']}", flush=True)
     print(f"Tasksets per U: {mapping['num_tasksets_per_utilization']}", flush=True)
     print(f"Output: {_display_path(out_dir)}", flush=True)
 
+    if args.verbose_evaluator:
+        _print_compact_event("[setup] generating/loading tasksets...")
     tasksets = generate_yaml_tasksets(args, mapping, out_dir)
     if not tasksets:
         print("[error] no tasksets generated", file=sys.stderr)
         return 1
+    if args.verbose_evaluator:
+        _print_compact_event(f"[setup] tasksets ready: {len(tasksets)}")
 
+    if args.verbose_evaluator:
+        _print_compact_event("[setup] writing run metadata...")
     write_run_config(out_dir, args, config_path, yaml_data, mapping, tasksets, algorithm_list)
     write_yaml_mapping_report(out_dir, config_path, yaml_data, mapping, mapping_notes, tasksets)
 
@@ -1125,6 +1197,13 @@ def main() -> int:
     for taskset_idx, (util, taskset_path) in enumerate(tasksets, start=1):
         initial_masks = load_initial_masks(taskset_path)
         for rta_model, algorithm, label in algorithm_list:
+            if args.verbose_evaluator:
+                next_step = completed_steps + 1
+                _print_compact_event(
+                    f"[run] step {next_step}/{total_steps} taskset "
+                    f"{taskset_idx}/{len(tasksets)} U={util:.2f} {label} "
+                    f"{_compact_path(_display_path(taskset_path))}"
+                )
             run_kwargs = dict(
                 dnn_taskset_path=taskset_path,
                 model=rta_model,
@@ -1141,6 +1220,9 @@ def main() -> int:
                 live_budget=live_budget,
                 allow_proactive_splitting=args.allow_proactive_splitting,
                 allow_equal_wcet_fallback=args.allow_equal_wcet_fallback,
+                force_profile=bool(args.force_profile),
+                verbose_evaluator=bool(args.verbose_evaluator),
+                enable_monotonic_k_split_cache=bool(args.monotonic_k_split_cache),
             )
             if args.verbose_evaluator:
                 result = run_dnn_rta_algorithm(**run_kwargs)
@@ -1155,6 +1237,39 @@ def main() -> int:
             )
             row["k_split_candidate_mask_inference_runs"] = int(
                 getattr(result.stats, "k_split_candidate_mask_inference_runs", 0)
+            )
+            row["k_split_candidate_mask_cold_export_s"] = float(
+                getattr(result.stats, "k_split_candidate_mask_cold_export_s", 0.0)
+            )
+            row["k_split_candidate_mask_cold_build_s"] = float(
+                getattr(result.stats, "k_split_candidate_mask_cold_build_s", 0.0)
+            )
+            row["k_split_candidate_mask_cold_profile_s"] = float(
+                getattr(result.stats, "k_split_candidate_mask_cold_profile_s", 0.0)
+            )
+            row["k_split_candidate_mask_cold_total_s"] = float(
+                getattr(result.stats, "k_split_candidate_mask_cold_total_s", 0.0)
+            )
+            row["k_split_candidate_mask_cold_profile_missing"] = int(
+                getattr(result.stats, "k_split_candidate_mask_cold_profile_missing", 0)
+            )
+            row["k_split_candidate_mask_cold_profile_estimated"] = int(
+                getattr(result.stats, "k_split_candidate_mask_cold_profile_estimated", 0)
+            )
+            row["k_split_candidate_chunk_profiles_with_reuse"] = int(
+                getattr(result.stats, "k_split_candidate_chunk_profiles_with_reuse", 0)
+            )
+            row["k_split_unique_model_chunks"] = int(
+                getattr(result.stats, "k_split_unique_model_chunks", 0)
+            )
+            row["k_split_unique_model_masks"] = int(
+                getattr(result.stats, "k_split_unique_model_masks", 0)
+            )
+            row["k_split_unique_task_chunks"] = int(
+                getattr(result.stats, "k_split_unique_task_chunks", 0)
+            )
+            row["k_split_unique_task_masks"] = int(
+                getattr(result.stats, "k_split_unique_task_masks", 0)
             )
             per_rows.append(row)
             all_results.append({
@@ -1176,6 +1291,8 @@ def main() -> int:
                 sched + ("*" if error else ""),
                 split,
                 result.stats.masks_evaluated,
+                result.stats.k_split_calls,
+                result.stats.k_split_candidate_masks,
                 result.stats.cache_hits,
                 result.stats.real_profiles,
                 _display_path(taskset_path),
@@ -1203,7 +1320,16 @@ def main() -> int:
         "unique_skipped_masks", "interval_timing_cache_hits",
         "k_split_calls", "k_split_cache_hits", "k_split_candidate_masks",
         "k_split_candidate_mask_profiles", "k_split_candidate_mask_inference_runs",
+        "k_split_candidate_mask_cold_export_s",
+        "k_split_candidate_mask_cold_build_s",
+        "k_split_candidate_mask_cold_profile_s",
+        "k_split_candidate_mask_cold_total_s",
+        "k_split_candidate_mask_cold_profile_missing",
+        "k_split_candidate_mask_cold_profile_estimated",
+        "k_split_candidate_chunk_profiles_with_reuse",
         "k_split_candidate_chunk_profiles", "k_split_candidate_inference_runs",
+        "k_split_unique_model_chunks", "k_split_unique_model_masks",
+        "k_split_unique_task_chunks", "k_split_unique_task_masks",
         "early_stop_optimistic_checks", "early_stop_optimistic_deadline_misses",
         "gpu_util", "cpu_util", "total_util",
         "max_cpu_partition_util", "actual_g_ratio_min", "actual_g_ratio_max",
@@ -1228,7 +1354,10 @@ def main() -> int:
         "avg_interval_timing_cache_hits", "avg_k_split_calls",
         "avg_k_split_cache_hits", "avg_k_split_candidate_masks",
         "avg_k_split_candidate_mask_profiles", "avg_k_split_candidate_mask_inference_runs",
+        "avg_k_split_candidate_chunk_profiles_with_reuse",
         "avg_k_split_candidate_chunk_profiles", "avg_k_split_candidate_inference_runs",
+        "avg_k_split_unique_model_chunks", "avg_k_split_unique_model_masks",
+        "avg_k_split_unique_task_chunks", "avg_k_split_unique_task_masks",
         "avg_early_stop_optimistic_checks", "avg_early_stop_optimistic_deadline_misses",
         "avg_optimization_runtime_s",
         "split_triggered_tasksets", "split_triggered_pct",
@@ -1241,7 +1370,11 @@ def main() -> int:
         "avg_masks_evaluated", "avg_dry_run_evaluations", "avg_cache_hits",
         "avg_real_profiles", "avg_k_split_calls", "avg_k_split_cache_hits",
         "avg_k_split_candidate_masks", "avg_k_split_candidate_mask_profiles",
-        "avg_k_split_candidate_mask_inference_runs", "avg_k_split_candidate_chunk_profiles",
+        "avg_k_split_candidate_mask_inference_runs",
+        "avg_k_split_candidate_chunk_profiles_with_reuse",
+        "avg_k_split_candidate_chunk_profiles",
+        "avg_k_split_unique_model_chunks", "avg_k_split_unique_model_masks",
+        "avg_k_split_unique_task_chunks", "avg_k_split_unique_task_masks",
         "avg_k_split_candidate_inference_runs", "avg_early_stop_optimistic_checks",
         "avg_early_stop_optimistic_deadline_misses",
     ]

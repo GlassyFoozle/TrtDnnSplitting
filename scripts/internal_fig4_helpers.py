@@ -31,7 +31,7 @@ from src.integration.dnn_workload_generator import (
     _get_base_gpu_wcet_ms,
 )
 from src.integration.live_budget import LiveProfileBudget
-from src.integration.split_point_policy import get_enabled_boundaries
+from src.integration.split_point_policy import get_enabled_boundaries, list_policy_names
 
 
 AlgorithmSpec = Tuple[str, str]
@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--max-block-count", type=int, default=None)
     ap.add_argument("--per-splitting-overhead", type=float, default=0.0)
     ap.add_argument("--max-retries", type=int, default=200)
-    ap.add_argument("--split-policy", default="stage", choices=["all", "paper_like", "stage", "five_points", "ten_points", "major_blocks"])
+    ap.add_argument("--split-policy", default="stage", choices=list_policy_names())
     ap.add_argument("--max-candidates", type=int, default=50)
     ap.add_argument("--max-profiles", type=int, default=10)
     ap.add_argument("--max-iterations", type=int, default=1000)
@@ -461,8 +461,16 @@ def summarize_result(
         "k_split_calls": int(getattr(result.stats, "k_split_calls", 0)),
         "k_split_cache_hits": int(getattr(result.stats, "k_split_cache_hits", 0)),
         "k_split_candidate_masks": int(getattr(result.stats, "k_split_candidate_masks", 0)),
+        "k_split_candidate_mask_profiles": int(getattr(result.stats, "k_split_candidate_mask_profiles", 0)),
+        "k_split_candidate_chunk_profiles_with_reuse": int(
+            getattr(result.stats, "k_split_candidate_chunk_profiles_with_reuse", 0)
+        ),
         "k_split_candidate_chunk_profiles": int(getattr(result.stats, "k_split_candidate_chunk_profiles", 0)),
         "k_split_candidate_inference_runs": int(getattr(result.stats, "k_split_candidate_inference_runs", 0)),
+        "k_split_unique_model_chunks": int(getattr(result.stats, "k_split_unique_model_chunks", 0)),
+        "k_split_unique_model_masks": int(getattr(result.stats, "k_split_unique_model_masks", 0)),
+        "k_split_unique_task_chunks": int(getattr(result.stats, "k_split_unique_task_chunks", 0)),
+        "k_split_unique_task_masks": int(getattr(result.stats, "k_split_unique_task_masks", 0)),
         "early_stop_optimistic_checks": int(getattr(result.stats, "early_stop_optimistic_checks", 0)),
         "early_stop_optimistic_deadline_misses": int(getattr(result.stats, "early_stop_optimistic_deadline_misses", 0)),
         "dry_run_evaluations": int(result.stats.dry_run_evaluations),
@@ -583,8 +591,16 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_k_split_calls": avg(items, "k_split_calls"),
             "avg_k_split_cache_hits": avg(items, "k_split_cache_hits"),
             "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
+            "avg_k_split_candidate_mask_profiles": avg(items, "k_split_candidate_mask_profiles"),
+            "avg_k_split_candidate_chunk_profiles_with_reuse": avg(
+                items, "k_split_candidate_chunk_profiles_with_reuse"
+            ),
             "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
             "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
+            "avg_k_split_unique_model_chunks": avg(items, "k_split_unique_model_chunks"),
+            "avg_k_split_unique_model_masks": avg(items, "k_split_unique_model_masks"),
+            "avg_k_split_unique_task_chunks": avg(items, "k_split_unique_task_chunks"),
+            "avg_k_split_unique_task_masks": avg(items, "k_split_unique_task_masks"),
             "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
             "avg_early_stop_optimistic_deadline_misses": avg(
                 items, "early_stop_optimistic_deadline_misses"
@@ -636,8 +652,16 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
             "avg_k_split_calls": avg(items, "k_split_calls"),
             "avg_k_split_cache_hits": avg(items, "k_split_cache_hits"),
             "avg_k_split_candidate_masks": avg(items, "k_split_candidate_masks"),
+            "avg_k_split_candidate_mask_profiles": avg(items, "k_split_candidate_mask_profiles"),
+            "avg_k_split_candidate_chunk_profiles_with_reuse": avg(
+                items, "k_split_candidate_chunk_profiles_with_reuse"
+            ),
             "avg_k_split_candidate_chunk_profiles": avg(items, "k_split_candidate_chunk_profiles"),
             "avg_k_split_candidate_inference_runs": avg(items, "k_split_candidate_inference_runs"),
+            "avg_k_split_unique_model_chunks": avg(items, "k_split_unique_model_chunks"),
+            "avg_k_split_unique_model_masks": avg(items, "k_split_unique_model_masks"),
+            "avg_k_split_unique_task_chunks": avg(items, "k_split_unique_task_chunks"),
+            "avg_k_split_unique_task_masks": avg(items, "k_split_unique_task_masks"),
             "avg_early_stop_optimistic_checks": avg(items, "early_stop_optimistic_checks"),
             "avg_early_stop_optimistic_deadline_misses": avg(
                 items, "early_stop_optimistic_deadline_misses"
@@ -976,8 +1000,14 @@ def main() -> int:
         "k_split_calls",
         "k_split_cache_hits",
         "k_split_candidate_masks",
+        "k_split_candidate_mask_profiles",
+        "k_split_candidate_chunk_profiles_with_reuse",
         "k_split_candidate_chunk_profiles",
         "k_split_candidate_inference_runs",
+        "k_split_unique_model_chunks",
+        "k_split_unique_model_masks",
+        "k_split_unique_task_chunks",
+        "k_split_unique_task_masks",
         "early_stop_optimistic_checks",
         "early_stop_optimistic_deadline_misses",
         "dry_run_evaluations",
@@ -1022,8 +1052,14 @@ def main() -> int:
         "avg_k_split_calls",
         "avg_k_split_cache_hits",
         "avg_k_split_candidate_masks",
+        "avg_k_split_candidate_mask_profiles",
+        "avg_k_split_candidate_chunk_profiles_with_reuse",
         "avg_k_split_candidate_chunk_profiles",
         "avg_k_split_candidate_inference_runs",
+        "avg_k_split_unique_model_chunks",
+        "avg_k_split_unique_model_masks",
+        "avg_k_split_unique_task_chunks",
+        "avg_k_split_unique_task_masks",
         "avg_early_stop_optimistic_checks",
         "avg_early_stop_optimistic_deadline_misses",
         "avg_dry_run_evaluations",
@@ -1062,8 +1098,14 @@ def main() -> int:
         "avg_k_split_calls",
         "avg_k_split_cache_hits",
         "avg_k_split_candidate_masks",
+        "avg_k_split_candidate_mask_profiles",
+        "avg_k_split_candidate_chunk_profiles_with_reuse",
         "avg_k_split_candidate_chunk_profiles",
         "avg_k_split_candidate_inference_runs",
+        "avg_k_split_unique_model_chunks",
+        "avg_k_split_unique_model_masks",
+        "avg_k_split_unique_task_chunks",
+        "avg_k_split_unique_task_masks",
         "avg_early_stop_optimistic_checks",
         "avg_early_stop_optimistic_deadline_misses",
         "avg_dry_run_evaluations",

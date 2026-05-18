@@ -144,8 +144,19 @@ class ProfilingStats:
     k_split_candidate_masks: int = 0      # total candidate masks implied by K-search
     k_split_candidate_mask_profiles: int = 0  # cold interval-cache e2e mask profiles
     k_split_candidate_mask_inference_runs: int = 0
+    k_split_candidate_mask_cold_export_s: float = 0.0
+    k_split_candidate_mask_cold_build_s: float = 0.0
+    k_split_candidate_mask_cold_profile_s: float = 0.0
+    k_split_candidate_mask_cold_total_s: float = 0.0
+    k_split_candidate_mask_cold_profile_missing: int = 0
+    k_split_candidate_mask_cold_profile_estimated: int = 0
+    k_split_candidate_chunk_profiles_with_reuse: int = 0
     k_split_candidate_chunk_profiles: int = 0
     k_split_candidate_inference_runs: int = 0
+    k_split_unique_model_chunks: int = 0
+    k_split_unique_model_masks: int = 0
+    k_split_unique_task_chunks: int = 0
+    k_split_unique_task_masks: int = 0
     early_stop_optimistic_checks: int = 0
     early_stop_optimistic_deadline_misses: int = 0
 
@@ -154,6 +165,11 @@ class ProfilingStats:
     _seen_cache_hits: set = field(default_factory=set, repr=False, compare=False)
     _seen_skipped: set = field(default_factory=set, repr=False, compare=False)
     _seen_k_split_candidate_intervals: set = field(default_factory=set, repr=False, compare=False)
+    _pending_k_split_candidate_profile_masks: set = field(default_factory=set, repr=False, compare=False)
+    _seen_k_split_model_chunks: set = field(default_factory=set, repr=False, compare=False)
+    _seen_k_split_model_masks: set = field(default_factory=set, repr=False, compare=False)
+    _seen_k_split_task_chunks: set = field(default_factory=set, repr=False, compare=False)
+    _seen_k_split_task_masks: set = field(default_factory=set, repr=False, compare=False)
     # Per-model skipped masks — {model: [mask_list, ...]} for diagnostic use
     _skipped_by_model: dict = field(default_factory=dict, repr=False, compare=False)
 
@@ -179,6 +195,7 @@ class ProfilingStats:
         masks: List[List[int]],
         warmup: int = 0,
         iters: int = 0,
+        task_name: str | None = None,
     ) -> None:
         """
         Count e2e mask profiles under a per-run cold interval-cache model.
@@ -187,19 +204,84 @@ class ProfilingStats:
         Later candidate masks are free when every required interval was already
         observed during this taskset-algorithm run.
         """
+        task_owner = task_name or model_name
         for mask in masks:
-            interval_keys = [
-                (model_name, precision, tuple(group))
-                for group in _mask_interval_groups(mask)
-            ]
+            groups = _mask_interval_groups(mask)
+            model_mask_key = (model_name, precision, tuple(mask))
+            task_mask_key = (task_owner, model_name, precision, tuple(mask))
+            if model_mask_key not in self._seen_k_split_model_masks:
+                self._seen_k_split_model_masks.add(model_mask_key)
+                self.k_split_unique_model_masks += 1
+            if task_mask_key not in self._seen_k_split_task_masks:
+                self._seen_k_split_task_masks.add(task_mask_key)
+                self.k_split_unique_task_masks += 1
+
+            for group in groups:
+                model_chunk_key = (model_name, precision, tuple(group))
+                task_chunk_key = (task_owner, model_name, precision, tuple(group))
+                if model_chunk_key not in self._seen_k_split_model_chunks:
+                    self._seen_k_split_model_chunks.add(model_chunk_key)
+                    self.k_split_unique_model_chunks += 1
+                if task_chunk_key not in self._seen_k_split_task_chunks:
+                    self._seen_k_split_task_chunks.add(task_chunk_key)
+                    self.k_split_unique_task_chunks += 1
+
+            interval_keys = [(model_name, precision, tuple(group)) for group in groups]
             if interval_keys and all(
                 key in self._seen_k_split_candidate_intervals for key in interval_keys
             ):
                 continue
+            new_groups = [
+                group
+                for key, group in zip(interval_keys, groups)
+                if key not in self._seen_k_split_candidate_intervals
+            ]
             self.k_split_candidate_mask_profiles += 1
+            self.k_split_candidate_chunk_profiles_with_reuse += len(new_groups)
             self.k_split_candidate_mask_inference_runs += int(warmup) + int(iters)
+            cost = _estimate_candidate_mask_cold_cost(
+                model_name=model_name,
+                precision=precision,
+                mask=mask,
+                new_groups=new_groups,
+            )
+            self.k_split_candidate_mask_cold_export_s += cost["export_s"]
+            self.k_split_candidate_mask_cold_build_s += cost["build_s"]
+            self.k_split_candidate_mask_cold_profile_s += cost["profile_s"]
+            self.k_split_candidate_mask_cold_total_s += cost["total_s"]
+            if cost["profile_missing"]:
+                self.k_split_candidate_mask_cold_profile_missing += 1
+                self._pending_k_split_candidate_profile_masks.add(
+                    (model_name, precision, tuple(mask))
+                )
+            if cost["profile_estimated"]:
+                self.k_split_candidate_mask_cold_profile_estimated += 1
             for key in interval_keys:
                 self._seen_k_split_candidate_intervals.add(key)
+
+    def backfill_k_split_candidate_mask_profile_time(
+        self,
+        model_name: str,
+        precision: str,
+        mask: List[int],
+    ) -> None:
+        """Fill profile wall time when a candidate was profiled after initial accounting."""
+        key = (model_name, precision, tuple(mask))
+        if key not in self._pending_k_split_candidate_profile_masks:
+            return
+        profile_s, estimated, missing = _mask_profile_wall_s_for_cost(
+            model_name, precision, mask
+        )
+        if missing or profile_s <= 0.0:
+            return
+        self._pending_k_split_candidate_profile_masks.remove(key)
+        self.k_split_candidate_mask_cold_profile_missing = max(
+            0, self.k_split_candidate_mask_cold_profile_missing - 1
+        )
+        self.k_split_candidate_mask_cold_profile_s += profile_s
+        self.k_split_candidate_mask_cold_total_s += profile_s
+        if estimated:
+            self.k_split_candidate_mask_cold_profile_estimated += 1
 
     def update(self, result: MaskApplicationResult) -> None:
         self.masks_evaluated += 1
@@ -288,8 +370,19 @@ class ProfilingStats:
             "k_split_candidate_masks": self.k_split_candidate_masks,
             "k_split_candidate_mask_profiles": self.k_split_candidate_mask_profiles,
             "k_split_candidate_mask_inference_runs": self.k_split_candidate_mask_inference_runs,
+            "k_split_candidate_mask_cold_export_s": self.k_split_candidate_mask_cold_export_s,
+            "k_split_candidate_mask_cold_build_s": self.k_split_candidate_mask_cold_build_s,
+            "k_split_candidate_mask_cold_profile_s": self.k_split_candidate_mask_cold_profile_s,
+            "k_split_candidate_mask_cold_total_s": self.k_split_candidate_mask_cold_total_s,
+            "k_split_candidate_mask_cold_profile_missing": self.k_split_candidate_mask_cold_profile_missing,
+            "k_split_candidate_mask_cold_profile_estimated": self.k_split_candidate_mask_cold_profile_estimated,
+            "k_split_candidate_chunk_profiles_with_reuse": self.k_split_candidate_chunk_profiles_with_reuse,
             "k_split_candidate_chunk_profiles": self.k_split_candidate_chunk_profiles,
             "k_split_candidate_inference_runs": self.k_split_candidate_inference_runs,
+            "k_split_unique_model_chunks": self.k_split_unique_model_chunks,
+            "k_split_unique_model_masks": self.k_split_unique_model_masks,
+            "k_split_unique_task_chunks": self.k_split_unique_task_chunks,
+            "k_split_unique_task_masks": self.k_split_unique_task_masks,
             "early_stop_optimistic_checks": self.early_stop_optimistic_checks,
             "early_stop_optimistic_deadline_misses": self.early_stop_optimistic_deadline_misses,
             "skipped_masks_detail": self._skipped_by_model,
@@ -321,6 +414,112 @@ def _mask_interval_groups(mask: List[int]) -> List[List[int]]:
             current.append(boundary_idx + 1)
     groups.append(current)
     return groups
+
+
+def _estimate_candidate_mask_cold_cost(
+    model_name: str,
+    precision: str,
+    mask: List[int],
+    new_groups: List[List[int]],
+) -> dict:
+    """Estimate run-local cold-cache design time for one newly profiled mask."""
+    export_s = 0.0
+    build_s = 0.0
+    for group in new_groups:
+        timing = _load_interval_timing_for_cost(model_name, group)
+        export_s += float(timing.get("export_wall_s") or 0.0)
+        build_s += float(
+            timing.get(f"build_{precision}_wall_s")
+            or timing.get("build_fp32_wall_s")
+            or 0.0
+        )
+
+    profile_s, estimated, missing = _mask_profile_wall_s_for_cost(
+        model_name, precision, mask
+    )
+    return {
+        "export_s": export_s,
+        "build_s": build_s,
+        "profile_s": profile_s,
+        "total_s": export_s + build_s + profile_s,
+        "profile_estimated": estimated,
+        "profile_missing": missing,
+    }
+
+
+def _load_interval_timing_for_cost(model_name: str, group: List[int]) -> dict:
+    if not group:
+        return {}
+    path = (
+        REPO
+        / "artifacts"
+        / "chunk_cache"
+        / model_name
+        / f"int_{group[0]}_{group[-1]}"
+        / "timing.json"
+    )
+    if not path.exists():
+        return {}
+    try:
+        import json
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _mask_profile_wall_s_for_cost(
+    model_name: str,
+    precision: str,
+    mask: List[int],
+) -> tuple[float, bool, bool]:
+    """Return (profile wall seconds, estimated flag, missing flag)."""
+    try:
+        import json
+        from src.optimization.config_evaluator import mask_to_variant_name
+
+        variant = mask_to_variant_name(model_name, mask)
+        path = (
+            REPO
+            / "results"
+            / "evaluations"
+            / model_name
+            / f"{variant}_{precision}.json"
+        )
+        if path.exists():
+            data = json.loads(path.read_text())
+            value = float(data.get("profile_wall_s") or 0.0)
+            if value > 0.0:
+                return value, False, False
+            estimated = _estimate_profile_wall_from_intervals(model_name, precision, mask)
+            if estimated > 0.0:
+                data["profile_wall_s"] = estimated
+                data["profile_wall_s_estimated_from_interval_cache"] = True
+                notes = str(data.get("notes") or "")
+                marker = "profile_wall_s_estimated_from_interval_cache"
+                if marker not in notes:
+                    data["notes"] = (notes + "; " + marker).strip("; ")
+                path.write_text(json.dumps(data, indent=2))
+                return estimated, True, False
+        estimated = _estimate_profile_wall_from_intervals(model_name, precision, mask)
+        if estimated > 0.0:
+            return estimated, True, False
+    except Exception:
+        pass
+    return 0.0, False, True
+
+
+def _estimate_profile_wall_from_intervals(
+    model_name: str,
+    precision: str,
+    mask: List[int],
+) -> float:
+    values: List[float] = []
+    for group in _mask_interval_groups(mask):
+        timing = _load_interval_timing_for_cost(model_name, group)
+        value = float(timing.get(f"source_eval_profile_wall_s_{precision}") or 0.0)
+        if value > 0.0:
+            values.append(value)
+    return max(values) if values else 0.0
 
 
 @dataclass
@@ -479,6 +678,9 @@ def run_dnn_rta_algorithm(
     live_budget=None,                   # Optional[LiveProfileBudget] — shared global budget
     allow_proactive_splitting: bool = False,
     allow_equal_wcet_fallback: bool = False,
+    per_splitting_overhead: float = 0.0,
+    verbose_evaluator: bool = False,
+    enable_monotonic_k_split_cache: bool = True,
 ) -> DNNAlgorithmResult:
     """
     Run a DNN-aware splitting algorithm on a taskset JSON.
@@ -499,7 +701,6 @@ def run_dnn_rta_algorithm(
         schedulable=False,
         error=None,
     )
-
     # Shared kwargs for all evaluate_and_apply_mask calls
     eval_kwargs = dict(
         precision=precision,
@@ -510,6 +711,8 @@ def run_dnn_rta_algorithm(
         warmup=warmup,
         iters=iters,
         live_budget=live_budget,
+        verbose_evaluator=verbose_evaluator,
+        enable_monotonic_k_split_cache=enable_monotonic_k_split_cache,
     )
 
     # Load DNN tasks + build initial SegInfTask task_set
@@ -519,7 +722,10 @@ def run_dnn_rta_algorithm(
         allow_equal_wcet_fallback=allow_equal_wcet_fallback,
         allow_missing_base_timing_for_live=not dry_run,
     )
-    task_set = build_task_set_dict(dnn_tasks)
+    task_set = build_task_set_dict(
+        dnn_tasks,
+        per_splitting_overhead=float(per_splitting_overhead or 0.0),
+    )
 
     # Build task map: task.id (str) → (DNNBackedTask, SegInfTask)
     sorted_list = sort_task_set(task_set)
@@ -1152,7 +1358,13 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
         # Step 4: Early stop
         '''
         if early_stop:
-            optimistic_R_list = get_optimistic_SS_R(sorted_task_list)
+            optimistic_R_list = _get_measured_optimistic_SS_R(
+                sorted_task_list, task_map, eval_kwargs, policy_name
+            )
+            if optimistic_R_list is None:
+                is_schedulable = False
+                result.error = "measured optimistic SS probe failed"
+                break
             result.stats.early_stop_optimistic_checks += len(optimistic_R_list)
             early_stop_hit = False
             for k, R_k in enumerate(optimistic_R_list):
@@ -1188,6 +1400,55 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
         ))
 
     result.schedulable = is_schedulable
+
+
+def _get_measured_optimistic_SS_R(
+    sorted_task_list,
+    task_map: dict,
+    eval_kwargs: dict,
+    policy_name: str = "all",
+) -> Optional[List[float]]:
+    """Compute optimistic SS R using measured policy-max K split results."""
+    copied_task_list = deepcopy(sorted_task_list)
+    measured_full_split_blocks: List[float] = []
+
+    for task in copied_task_list:
+        dt_orig, _ = task_map[str(task.id)]
+        dt_probe = deepcopy(dt_orig)
+        probe_task = deepcopy(task)
+        for segment_idx, seg in enumerate(probe_task.inference_segment_list):
+            max_policy_k = _policy_max_chunks(dt_probe, seg, policy_name)
+            app_r = apply_k_chunks(
+                dt_probe,
+                probe_task,
+                segment_idx,
+                max_policy_k,
+                policy_name=policy_name,
+                **eval_kwargs,
+            )
+            if not app_r.success:
+                return None
+        measured_full_split_blocks.append(float(probe_task.max_G_block))
+
+    optimistic_R_list: List[float] = []
+    for i in range(len(copied_task_list)):
+        changed_lower_tasks = []
+        for j in range(i + 1, len(copied_task_list)):
+            task_j = copied_task_list[j]
+            old_max_G_block = task_j.max_G_block
+            new_max_G_block = measured_full_split_blocks[j]
+            if old_max_G_block == new_max_G_block:
+                continue
+            task_j.max_G_block = new_max_G_block
+            changed_lower_tasks.append((task_j, old_max_G_block))
+        try:
+            R_i, _, _, _ = get_SS_R(copied_task_list, i, optimistic_R_list)
+        finally:
+            for task_j, old_max_G_block in changed_lower_tasks:
+                task_j.max_G_block = old_max_G_block
+        optimistic_R_list.append(R_i)
+
+    return optimistic_R_list
 
 
 # ── SS: heu-k (measured K-search greedy) ─────────────────────────────────────
@@ -1873,19 +2134,19 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
         else:
             R_list = []
 
-        '''
-        # Step 4: Early stop
-        '''
-        optimistic_R_list = get_optimistic_UNI_R(uni_tasks)
-        for k in range(len(optimistic_R_list)):
-            task_k = uni_tasks[k]
-            D_k = task_k.D
-            R_k = optimistic_R_list[k]
-            if D_k < R_k:
-                is_schedulable = False
-                result.schedulable = is_schedulable
-                result.algorithm_iterations = profiling_count
-                return
+        # '''
+        # # Step 4: Early stop
+        # '''
+        # optimistic_R_list = get_optimistic_UNI_R(uni_tasks)
+        # for k in range(len(optimistic_R_list)):
+        #     task_k = uni_tasks[k]
+        #     D_k = task_k.D
+        #     R_k = optimistic_R_list[k]
+        #     if D_k < R_k:
+        #         is_schedulable = False
+        #         result.schedulable = is_schedulable
+        #         result.algorithm_iterations = profiling_count
+        #         return
 
         # Detect not schedulable
         if not is_schedulable:

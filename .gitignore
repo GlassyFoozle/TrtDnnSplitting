@@ -30,6 +30,7 @@ results/dnn_algorithms/
 
 # C++ build
 cpp_runtime/build/
+cpp_runtime/build_sync_wall/
 
 # Profiling cache
 *.profiling_cache.json

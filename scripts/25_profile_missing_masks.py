@@ -94,9 +94,9 @@ def _interval_has_gpu_timing(model: str, group: list, precision: str) -> bool:
     except Exception:
         return False
     return bool(
-        t.get(f"gpu_mean_ms_{precision}")
-        and t.get(f"gpu_p99_ms_{precision}")
-        and t.get(f"gpu_max_ms_{precision}")
+        (t.get(f"wall_mean_ms_{precision}") or t.get(f"gpu_mean_ms_{precision}"))
+        and (t.get(f"wall_p99_ms_{precision}") or t.get(f"gpu_p99_ms_{precision}"))
+        and (t.get(f"wall_max_ms_{precision}") or t.get(f"gpu_max_ms_{precision}"))
     )
 
 

@@ -90,9 +90,9 @@ def _read_singleton_interval_timings(
             return None
         try:
             d = json.loads(p.read_text())
-            mean = d.get(f"gpu_mean_ms_{precision}")
-            p99 = d.get(f"gpu_p99_ms_{precision}")
-            max_v = d.get(f"gpu_max_ms_{precision}")
+            mean = d.get(f"wall_mean_ms_{precision}", d.get(f"gpu_mean_ms_{precision}"))
+            p99 = d.get(f"wall_p99_ms_{precision}", d.get(f"gpu_p99_ms_{precision}"))
+            max_v = d.get(f"wall_max_ms_{precision}", d.get(f"gpu_max_ms_{precision}"))
             if mean is None or p99 is None or max_v is None:
                 return None
             means.append(float(mean))
@@ -172,9 +172,9 @@ def load_candidate_space(
                 d = json.loads(cpp_path.read_text())
                 cpp_chunks = d.get("chunks", [])
                 if len(cpp_chunks) == n:
-                    per_chunk_means = [c["gpu_mean_ms"] for c in cpp_chunks]
-                    per_chunk_p99 = [c["gpu_p99_ms"] for c in cpp_chunks]
-                    per_chunk_max = [c.get("gpu_max_ms", 0.0) for c in cpp_chunks]
+                    per_chunk_means = [c.get("cpu_mean_ms", c["gpu_mean_ms"]) for c in cpp_chunks]
+                    per_chunk_p99 = [c.get("cpu_p99_ms", c["gpu_p99_ms"]) for c in cpp_chunks]
+                    per_chunk_max = [c.get("cpu_max_ms", c.get("gpu_max_ms", 0.0)) for c in cpp_chunks]
                     timing_source = str(cpp_path.relative_to(REPO))
             except Exception:
                 pass
@@ -229,7 +229,11 @@ def load_candidate_space(
         if allow_equal_wcet_fallback:
             _DRY_RUN_WCET_MS = {
                 "alexnet": 1.754,
+                "inception_v3": 8.00,
+                "mobilenet_v3_small": 0.75,
                 "resnet18": 1.037,
+                "vit": 8.50,
+                "vit_b_16": 8.50,
                 "vit_l_16": 25.43,
                 "vgg19": 7.562,
             }

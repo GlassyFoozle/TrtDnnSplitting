@@ -54,7 +54,11 @@ REPO = Path(__file__).resolve().parent.parent.parent
 # Known models and their dag_aligned_full chunk counts (for base-sum fallback)
 _MODEL_N_CHUNKS: Dict[str, int] = {
     "alexnet":  22,
+    "inception_v3": 22,
+    "mobilenet_v3_small": 19,
     "resnet18": 14,
+    "vit": 14,
+    "vit_b_16": 14,
     "vit_l_16": 26,
     "vgg19":    46,
 }
@@ -63,7 +67,11 @@ _MODEL_N_CHUNKS: Dict[str, int] = {
 # Used as final fallback in dry-run mode when no profiling cache is present.
 _DRY_RUN_BASE_WCET_MS: Dict[str, float] = {
     "alexnet":  1.754,
+    "inception_v3": 8.00,
+    "mobilenet_v3_small": 0.75,
     "resnet18": 1.037,
+    "vit": 8.50,
+    "vit_b_16": 8.50,
     "vit_l_16": 25.43,
     "vgg19":    7.562,
 }
@@ -97,6 +105,7 @@ def _get_base_gpu_wcet_ms(
     wcet_metric: str = "max",
     profiling_db=None,
     profile_missing_k1: bool = False,
+    force_profile_k1: bool = False,
     warmup: int = 20,
     iters: int = 200,
 ) -> Optional[float]:
@@ -118,6 +127,18 @@ def _get_base_gpu_wcet_ms(
     )
     model_key = model_name.lower()
 
+    if force_profile_k1:
+        k1_value = _profile_missing_k1_wcet_ms(
+            model_key,
+            precision=precision,
+            wcet_metric=wcet_metric,
+            warmup=warmup,
+            iters=iters,
+            force=True,
+        )
+        if k1_value is not None:
+            return k1_value
+
     k1_value = _get_measured_k1_wcet_ms(model_key, precision, metric_key)
     if k1_value is not None:
         return k1_value
@@ -129,6 +150,7 @@ def _get_base_gpu_wcet_ms(
             wcet_metric=wcet_metric,
             warmup=warmup,
             iters=iters,
+            force=False,
         )
         if k1_value is not None:
             return k1_value
@@ -172,7 +194,51 @@ def _get_measured_k1_wcet_ms(
             value = _read_k1_wcet_from_eval_json(candidate, mask, metric_key)
             if value is not None:
                 return value
+    value = _read_k1_wcet_from_interval_cache(
+        model_name,
+        n_base,
+        precision,
+        metric_key,
+    )
+    if value is not None:
+        return value
     return None
+
+
+def _read_k1_wcet_from_interval_cache(
+    model_name: str,
+    n_base: int,
+    precision: str,
+    metric_key: str,
+) -> Optional[float]:
+    """Read K=1 timing from the whole-model interval cache int_0_(N-1)."""
+    path = (
+        REPO
+        / "artifacts"
+        / "chunk_cache"
+        / model_name
+        / f"int_0_{n_base - 1}"
+        / "timing.json"
+    )
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    if data.get("source_chunk_ids") not in (None, list(range(n_base))):
+        return None
+    metric = "mean" if metric_key == "per_chunk_gpu_mean_ms" else "max"
+    value = data.get(f"wall_{metric}_ms_{precision}", data.get(f"gpu_{metric}_ms_{precision}"))
+    if value is None and metric == "max":
+        value = data.get(f"wall_p99_ms_{precision}", data.get(f"gpu_p99_ms_{precision}"))
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0.0 else None
 
 
 def _read_k1_wcet_from_eval_json(
@@ -205,6 +271,7 @@ def _profile_missing_k1_wcet_ms(
     wcet_metric: str,
     warmup: int,
     iters: int,
+    force: bool = False,
 ) -> Optional[float]:
     n_base = _get_base_chunk_count(model_name)
     if n_base is None or n_base <= 0:
@@ -220,6 +287,7 @@ def _profile_missing_k1_wcet_ms(
             warmup=warmup,
             iters=iters,
             dry_run=False,
+            force=force,
         )
     except Exception:
         return None
@@ -286,6 +354,7 @@ class WorkloadConfig:
     c_ratio_range: Optional[Tuple[float, float]] = None
     utilization_kind: str = "total"
     profile_missing_k1: bool = False
+    force_profile_k1: bool = False
     warmup: int = 20
     iters: int = 200
 
@@ -312,6 +381,7 @@ def generate_tasksets(
             config.wcet_metric,
             profiling_db,
             profile_missing_k1=config.profile_missing_k1,
+            force_profile_k1=config.force_profile_k1,
             warmup=config.warmup,
             iters=config.iters,
         )

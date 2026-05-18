@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import json
 import math
-from itertools import combinations
+import subprocess
 import sys
+from itertools import combinations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
@@ -49,6 +50,12 @@ def _select_measured_chunk_times(eval_result, wcet_metric: str) -> List[float]:
             if legacy:
                 return list(legacy)
     return list(eval_result.per_chunk_gpu_mean_ms or [])
+
+
+def _print_live_eval_event(message: str) -> None:
+    """Print live build/profile events even when experiment progress captures stdout."""
+    stream = getattr(sys, "__stdout__", None) or sys.stdout
+    print(message, file=stream, flush=True)
 
 
 @dataclass
@@ -107,10 +114,14 @@ def evaluate_and_apply_mask(
     wcet_metric: str = "max",   # "max" or "mean"; "p99" is a deprecated alias
     use_cpp: bool = True,
     force: bool = False,
+    export: bool = True,
+    build: bool = True,
     dry_run: bool = False,
     warmup: int = 20,
     iters: int = 200,
     live_budget: "Optional[LiveProfileBudget]" = None,
+    verbose_evaluator: bool = False,
+    enable_monotonic_k_split_cache: bool = True,
 ) -> MaskApplicationResult:
     """
     Evaluate a boundary mask via TRT profiling (or cache) and apply measured
@@ -226,11 +237,11 @@ def evaluate_and_apply_mask(
                     model_name=dnn_task.model_name,
                     error=reason,
                 )
-            print(
-                f"[live] real profile/build start: {dnn_task.model_name}/{variant_name} "
-                f"K={k}",
-                flush=True,
-            )
+            if verbose_evaluator:
+                _print_live_eval_event(
+                    f"[live] real profile/build start: {dnn_task.model_name}/{variant_name} "
+                    f"K={k}"
+                )
 
     # ── real evaluation ───────────────────────────────────────────────────────
     eval_result = _eval_mask(
@@ -241,7 +252,25 @@ def evaluate_and_apply_mask(
         iters=iters,
         use_cpp=use_cpp,
         force=force,
+        export=export,
+        build=build,
     )
+
+    if verbose_evaluator and not eval_result.cache_hit and (
+        eval_result.exported or eval_result.built or eval_result.profiled
+    ):
+        phases = []
+        if eval_result.exported:
+            phases.append(f"export={float(eval_result.export_wall_s or 0.0):.1f}s")
+        if eval_result.built:
+            phases.append(f"build={float(eval_result.build_wall_s or 0.0):.1f}s")
+        if eval_result.profiled:
+            phases.append(f"profile={float(eval_result.profile_wall_s or 0.0):.1f}s")
+        _print_live_eval_event(
+            "[live] real eval done: "
+            f"{eval_result.model_name}/{eval_result.variant_name} "
+            f"K={eval_result.n_chunks} " + " ".join(phases)
+        )
 
     if eval_result.error or not eval_result.ok():
         error_msg = eval_result.error or "EvaluationResult not ok (no timing)"
@@ -385,6 +414,10 @@ def apply_k_chunks(
     search_stats=None,
     max_k_search_candidates: int = 10000,
     use_k_split_cache: bool = True,
+    refresh_k_split_cache: bool = False,
+    require_k_split_cache: bool = False,
+    enable_monotonic_k_split_cache: bool = True,
+    _ensure_endpoint_cache: bool = True,
     **kwargs,
 ) -> MaskApplicationResult:
     """
@@ -413,10 +446,70 @@ def apply_k_chunks(
     candidate_chunk_profiles = candidate_count * actual_k
     warmup = int(kwargs.get("warmup", 20) or 0)
     iters = int(kwargs.get("iters", 200) or 0)
-    masks = _k_chunk_candidate_masks(boundary_count, actual_k, enabled)
+    task_name = getattr(dnn_task, "task_name", None) or "unknown-task"
+    verbose_evaluator = bool(kwargs.get("verbose_evaluator", False))
 
     if search_stats is not None:
         search_stats.k_split_calls += 1
+
+    force = bool(kwargs.get("force", False))
+    cache_key = _k_split_cache_key(
+        model_name=dnn_task.model_name,
+        precision=str(kwargs.get("precision", getattr(dnn_task, "precision", "fp32"))),
+        wcet_metric=str(kwargs.get("wcet_metric", getattr(dnn_task, "wcet_metric", "max"))),
+        policy_name=policy_name,
+        boundary_count=boundary_count,
+        enabled_boundaries=enabled,
+        k=actual_k,
+    )
+    if (
+        use_k_split_cache
+        and _ensure_endpoint_cache
+        and not dry_run
+        and not force
+    ):
+        endpoint_error = _ensure_endpoint_k_split_cache(
+            dnn_task,
+            seg_task,
+            segment_idx,
+            policy_name=policy_name,
+            enabled_boundaries=enabled,
+            boundary_count=boundary_count,
+            requested_k=actual_k,
+            search_stats=search_stats,
+            max_k_search_candidates=max_k_search_candidates,
+            kwargs=kwargs,
+        )
+        if endpoint_error is not None:
+            return endpoint_error
+    if use_k_split_cache and not refresh_k_split_cache and not dry_run and not force:
+        cached_entry = _load_cached_k_split_entry(cache_key, boundary_count, actual_k, enabled)
+        if cached_entry is not None:
+            if search_stats is not None:
+                search_stats.k_split_cache_hits += 1
+            cached_result = _apply_cached_k_split_timing(
+                dnn_task, seg_task, segment_idx, cached_entry
+            )
+            if cached_result is not None:
+                return cached_result
+            cached_mask = cached_entry["mask"]
+            cached_result = evaluate_and_apply_mask(
+                dnn_task, seg_task, cached_mask, segment_idx,
+                dry_run=dry_run, **kwargs
+            )
+            if cached_result.success:
+                _apply_legacy_cached_score_if_possible(
+                    dnn_task, seg_task, segment_idx, cached_entry, cached_result
+                )
+                return cached_result
+
+    masks = _k_chunk_candidate_masks(boundary_count, actual_k, enabled)
+    if verbose_evaluator and candidate_count > 0:
+        _print_live_eval_event(
+            f"[split] {task_name} {dnn_task.model_name} K={actual_k} "
+            f"candidates={candidate_count} policy={policy_name}"
+        )
+    if search_stats is not None:
         search_stats.k_split_candidate_masks += candidate_count
         search_stats.k_split_candidate_chunk_profiles += candidate_chunk_profiles
         search_stats.k_split_candidate_inference_runs += (
@@ -432,29 +525,8 @@ def apply_k_chunks(
                 masks,
                 warmup,
                 iters,
+                task_name,
             )
-
-    force = bool(kwargs.get("force", False))
-    cache_key = _k_split_cache_key(
-        model_name=dnn_task.model_name,
-        precision=str(kwargs.get("precision", getattr(dnn_task, "precision", "fp32"))),
-        wcet_metric=str(kwargs.get("wcet_metric", getattr(dnn_task, "wcet_metric", "max"))),
-        policy_name=policy_name,
-        boundary_count=boundary_count,
-        enabled_boundaries=enabled,
-        k=actual_k,
-    )
-    if use_k_split_cache and not dry_run and not force:
-        cached_mask = _load_cached_k_split_mask(cache_key, boundary_count, actual_k, enabled)
-        if cached_mask is not None:
-            if search_stats is not None:
-                search_stats.k_split_cache_hits += 1
-            cached_result = evaluate_and_apply_mask(
-                dnn_task, seg_task, cached_mask, segment_idx,
-                dry_run=dry_run, **kwargs
-            )
-            if cached_result.success:
-                return cached_result
 
     if len(masks) > max_k_search_candidates:
         return MaskApplicationResult(
@@ -470,24 +542,15 @@ def apply_k_chunks(
 
     task_snapshot = _snapshot_task_timing(seg_task, segment_idx)
     dnn_snapshot = _snapshot_dnn_timing(dnn_task)
-    best_result: Optional[MaskApplicationResult] = None
-    best_score = None
-    last_error: Optional[MaskApplicationResult] = None
-
-    for mask in masks:
-        r = evaluate_and_apply_mask(
-            dnn_task, seg_task, mask, segment_idx, dry_run=dry_run, **kwargs
-        )
-        if r.success:
-            score = _measured_evenness_score(r.selected_chunk_times)
-            if best_score is None or score < best_score:
-                best_score = score
-                best_result = r
-        else:
-            last_error = r
-
-        if search_stats is not None:
-            search_stats.update(r)
+    best_result, best_score, last_error = _search_best_k_result(
+        dnn_task,
+        seg_task,
+        segment_idx,
+        masks,
+        dry_run=dry_run,
+        search_stats=search_stats,
+        kwargs=kwargs,
+    )
 
     if best_result is None:
         _restore_task_timing(seg_task, segment_idx, task_snapshot)
@@ -504,6 +567,49 @@ def apply_k_chunks(
         )
 
     if use_k_split_cache and not dry_run and not force:
+        retried = 0
+        max_reprofiles = int(kwargs.get("max_monotonic_reprofiles", 10))
+        while not _measured_score_within_endpoint_envelope(
+            cache_key=cache_key,
+            model_name=dnn_task.model_name,
+            precision=str(kwargs.get("precision", getattr(dnn_task, "precision", "fp32"))),
+            wcet_metric=str(kwargs.get("wcet_metric", getattr(dnn_task, "wcet_metric", "max"))),
+            policy_name=policy_name,
+            boundary_count=boundary_count,
+            enabled_boundaries=enabled,
+            k=actual_k,
+            score=best_score,
+            full_split_total=sum(float(v) for v in getattr(dnn_task, "base_chunk_times_ms", []) or []),
+        ):
+            if retried >= max_reprofiles:
+                _restore_task_timing(seg_task, segment_idx, task_snapshot)
+                _restore_dnn_timing(dnn_task, dnn_snapshot)
+                return MaskApplicationResult(
+                    success=False,
+                    mask=list(getattr(seg, "splitting_config", [])),
+                    k_chunks=actual_k,
+                    model_name=dnn_task.model_name,
+                    error=(
+                        f"K={actual_k} timing did not satisfy endpoint monotonicity "
+                        f"after {max_reprofiles} reprofiles"
+                    ),
+                )
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.update({"force": True, "export": False, "build": False})
+            best_result, best_score, last_error = _search_best_k_result(
+                dnn_task,
+                seg_task,
+                segment_idx,
+                masks,
+                dry_run=dry_run,
+                search_stats=search_stats,
+                kwargs=retry_kwargs,
+            )
+            if best_result is None:
+                break
+            retried += 1
+
+    if use_k_split_cache and not dry_run and not force:
         _store_cached_k_split_mask(
             cache_key,
             model_name=dnn_task.model_name,
@@ -515,7 +621,23 @@ def apply_k_chunks(
             k=actual_k,
             mask=best_result.mask,
             score=best_score,
+            selected_chunk_times=best_result.selected_chunk_times,
+            variant_name=best_result.variant_name,
+            profile_result_path=best_result.profile_result_path,
+            enable_monotonic_k_split_cache=enable_monotonic_k_split_cache,
         )
+        # Once a best-K cache entry has been created, make it the source of
+        # truth immediately instead of returning the eval-path object that was
+        # only used to discover it.
+        cached_entry = _load_cached_k_split_entry(
+            cache_key, boundary_count, actual_k, enabled
+        )
+        if cached_entry is not None:
+            cached_result = _apply_cached_k_split_timing(
+                dnn_task, seg_task, segment_idx, cached_entry
+            )
+            if cached_result is not None:
+                return cached_result
 
     # Re-apply the selected mask so the task reflects the best measured config.
     return evaluate_and_apply_mask(
@@ -550,6 +672,44 @@ def _measured_evenness_score(chunk_times: List[float]):
     spread = max_chunk - min(chunk_times)
     total = sum(chunk_times)
     return (max_chunk, total, spread)
+
+
+def _search_best_k_result(
+    dnn_task: "DNNBackedTask",
+    seg_task,
+    segment_idx: int,
+    masks: List[List[int]],
+    *,
+    dry_run: bool,
+    search_stats,
+    kwargs: dict,
+) -> tuple[Optional[MaskApplicationResult], Optional[tuple], Optional[MaskApplicationResult]]:
+    best_result: Optional[MaskApplicationResult] = None
+    best_score = None
+    last_error: Optional[MaskApplicationResult] = None
+    for mask in masks:
+        r = evaluate_and_apply_mask(
+            dnn_task, seg_task, mask, segment_idx, dry_run=dry_run, **kwargs
+        )
+        if r.success:
+            score = _measured_evenness_score(r.selected_chunk_times)
+            if best_score is None or score < best_score:
+                best_score = score
+                best_result = r
+        else:
+            last_error = r
+        if search_stats is not None:
+            search_stats.update(r)
+            backfill_profile_time = getattr(
+                search_stats, "backfill_k_split_candidate_mask_profile_time", None
+            )
+            if callable(backfill_profile_time):
+                backfill_profile_time(
+                    dnn_task.model_name,
+                    str(kwargs.get("precision", getattr(dnn_task, "precision", "fp32"))),
+                    mask,
+                )
+    return best_result, best_score, last_error
 
 
 def _k_split_cache_key(
@@ -594,12 +754,12 @@ def _write_k_split_cache(data: dict) -> None:
     tmp.replace(_K_SPLIT_CACHE_PATH)
 
 
-def _load_cached_k_split_mask(
+def _load_cached_k_split_entry(
     cache_key: str,
     boundary_count: int,
     k: int,
     enabled_boundaries: List[int],
-) -> Optional[List[int]]:
+) -> Optional[dict]:
     data = _load_k_split_cache()
     entry = data.get("entries", {}).get(cache_key)
     if not isinstance(entry, dict):
@@ -615,7 +775,85 @@ def _load_cached_k_split_mask(
             return None
         if int(bit) == 1 and idx not in enabled:
             return None
-    return [int(v) for v in mask]
+    normalized = dict(entry)
+    normalized["mask"] = [int(v) for v in mask]
+    return normalized
+
+
+def _ensure_endpoint_k_split_cache(
+    dnn_task: "DNNBackedTask",
+    seg_task,
+    segment_idx: int,
+    *,
+    policy_name: str,
+    enabled_boundaries: List[int],
+    boundary_count: int,
+    requested_k: int,
+    search_stats,
+    max_k_search_candidates: int,
+    kwargs: dict,
+) -> Optional[MaskApplicationResult]:
+    """Ensure non-split and policy-full split anchors exist before inner K."""
+    precision = str(kwargs.get("precision", getattr(dnn_task, "precision", "fp32")))
+    metric = str(kwargs.get("wcet_metric", getattr(dnn_task, "wcet_metric", "max")))
+    max_k = len(enabled_boundaries) + 1
+    for endpoint_k in (1, max_k):
+        endpoint_key = _k_split_cache_key(
+            model_name=dnn_task.model_name,
+            precision=precision,
+            wcet_metric=metric,
+            policy_name=policy_name,
+            boundary_count=boundary_count,
+            enabled_boundaries=enabled_boundaries,
+            k=endpoint_k,
+        )
+        if _load_cached_k_split_entry(
+            endpoint_key, boundary_count, endpoint_k, enabled_boundaries
+        ) is not None:
+            continue
+        if endpoint_k == requested_k:
+            continue
+        endpoint_result = apply_k_chunks(
+            dnn_task,
+            seg_task,
+            segment_idx,
+            endpoint_k,
+            policy_name=policy_name,
+            search_stats=search_stats,
+            max_k_search_candidates=max_k_search_candidates,
+            _ensure_endpoint_cache=False,
+            **kwargs,
+        )
+        if not endpoint_result.success:
+            return endpoint_result
+    return None
+
+
+def _measured_score_within_endpoint_envelope(
+    *,
+    cache_key: str,
+    model_name: str,
+    precision: str,
+    wcet_metric: str,
+    policy_name: str,
+    boundary_count: int,
+    enabled_boundaries: List[int],
+    k: int,
+    score,
+    full_split_total: float | None = None,
+) -> bool:
+    """Reject inner-K measurements whose total exceeds the full-split endpoint."""
+    if score is None:
+        return False
+    if full_split_total is None or full_split_total <= 0:
+        return True
+    if k >= len(enabled_boundaries) + 1:
+        return True
+    try:
+        total = float(score[1])
+    except (TypeError, ValueError, IndexError):
+        return True
+    return total <= full_split_total + 1e-9
 
 
 def _store_cached_k_split_mask(
@@ -630,10 +868,31 @@ def _store_cached_k_split_mask(
     k: int,
     mask: List[int],
     score,
+    selected_chunk_times: List[float],
+    variant_name: str,
+    profile_result_path: str,
+    enable_monotonic_k_split_cache: bool = True,
+    refresh_curve_artifacts: bool = True,
 ) -> None:
     data = _load_k_split_cache()
     data.setdefault("version", _K_SPLIT_CACHE_VERSION)
     entries = data.setdefault("entries", {})
+    if enable_monotonic_k_split_cache:
+        monotonic_chunk_times, monotonic_meta = _monotonic_cached_chunk_times(
+            entries,
+            model_name=model_name,
+            precision=precision,
+            wcet_metric=wcet_metric,
+            policy_name=policy_name,
+            boundary_count=boundary_count,
+            enabled_boundaries=enabled_boundaries,
+            k=k,
+            selected_chunk_times=selected_chunk_times,
+        )
+    else:
+        monotonic_chunk_times = list(selected_chunk_times)
+        monotonic_meta = {"monotonic_adjusted": False}
+    stored_score = _measured_evenness_score(monotonic_chunk_times)
     entries[cache_key] = {
         "model_name": model_name,
         "precision": precision,
@@ -643,9 +902,316 @@ def _store_cached_k_split_mask(
         "enabled_boundaries": list(sorted(enabled_boundaries)),
         "k": k,
         "mask": list(mask),
-        "score": list(score) if score is not None else None,
+        "score": list(stored_score),
+        "measured_score": list(score) if score is not None else None,
+        "selected_chunk_times": monotonic_chunk_times,
+        "measured_selected_chunk_times": list(selected_chunk_times),
+        "variant_name": variant_name,
+        "profile_result_path": profile_result_path,
+        **monotonic_meta,
     }
+    
+    if enable_monotonic_k_split_cache:
+        _recompute_later_monotonic_entries(
+            entries,
+            model_name=model_name,
+            precision=precision,
+            wcet_metric=wcet_metric,
+            policy_name=policy_name,
+            boundary_count=boundary_count,
+            enabled_boundaries=enabled_boundaries,
+            inserted_k=k,
+        )
     _write_k_split_cache(data)
+    if refresh_curve_artifacts:
+        _refresh_k_split_curve_artifacts_if_live_cache(
+            precision=precision,
+            wcet_metric=wcet_metric,
+            policy_name=policy_name,
+        )
+
+
+def _recompute_later_monotonic_entries(
+    entries: dict,
+    *,
+    model_name: str,
+    precision: str,
+    wcet_metric: str,
+    policy_name: str,
+    boundary_count: int,
+    enabled_boundaries: List[int],
+    inserted_k: int,
+) -> None:
+    """Re-normalize later K entries when an earlier K arrives out of order."""
+    family: list[tuple[int, str, dict]] = []
+    enabled = list(sorted(enabled_boundaries))
+    for key, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        if (
+            entry.get("model_name") != model_name
+            or entry.get("precision") != precision
+            or entry.get("wcet_metric") != wcet_metric
+            or entry.get("policy_name") != policy_name
+            or entry.get("boundary_count") != boundary_count
+            or list(entry.get("enabled_boundaries", [])) != enabled
+        ):
+            continue
+        try:
+            entry_k = int(entry.get("k"))
+        except (TypeError, ValueError):
+            continue
+        if entry_k > inserted_k:
+            family.append((entry_k, key, entry))
+
+    for entry_k, key, entry in sorted(family):
+        raw_times = entry.get("measured_selected_chunk_times") or entry.get("selected_chunk_times")
+        if not isinstance(raw_times, list):
+            continue
+        adjusted, meta = _monotonic_cached_chunk_times(
+            entries,
+            model_name=model_name,
+            precision=precision,
+            wcet_metric=wcet_metric,
+            policy_name=policy_name,
+            boundary_count=boundary_count,
+            enabled_boundaries=enabled_boundaries,
+            k=entry_k,
+            selected_chunk_times=[float(v) for v in raw_times],
+        )
+        entry["selected_chunk_times"] = adjusted
+        entry["score"] = list(_measured_evenness_score(adjusted))
+        entry.pop("monotonic_adjusted", None)
+        entry.pop("monotonic_infeasible", None)
+        entry.pop("monotonic_prev_score", None)
+        entry.update(meta)
+        entries[key] = entry
+
+
+def _refresh_k_split_curve_artifacts_if_live_cache(
+    *,
+    precision: str,
+    wcet_metric: str,
+    policy_name: str,
+) -> None:
+    """Keep derived best-K curve artifacts current after live cache updates."""
+    if _K_SPLIT_CACHE_PATH != REPO / "results" / "optimization" / "measured_k_split_cache.json":
+        return
+    script = REPO / "scripts" / "35_plot_best_k_split_curve.py"
+    output_dir = REPO / "results" / "best_k_split_curves" / f"{precision}_{policy_name}_cache"
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--precision",
+                precision,
+                "--wcet-metric",
+                wcet_metric,
+                "--split-policy",
+                policy_name,
+                "--output-dir",
+                str(output_dir),
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
+
+
+def _monotonic_cached_chunk_times(
+    entries: dict,
+    *,
+    model_name: str,
+    precision: str,
+    wcet_metric: str,
+    policy_name: str,
+    boundary_count: int,
+    enabled_boundaries: List[int],
+    k: int,
+    selected_chunk_times: List[float],
+) -> tuple[List[float], dict]:
+    """Fit cached timing to the previous-K envelope when needed.
+
+    For increasing K, the selected max block should not exceed the previous K's
+    max, while total split overhead should not go below the previous K's total.
+    """
+    current = [float(v) for v in selected_chunk_times]
+    if k <= 1 or not current:
+        return current, {"monotonic_adjusted": False}
+
+    prev_key = _k_split_cache_key(
+        model_name=model_name,
+        precision=precision,
+        wcet_metric=wcet_metric,
+        policy_name=policy_name,
+        boundary_count=boundary_count,
+        enabled_boundaries=enabled_boundaries,
+        k=k - 1,
+    )
+    prev = entries.get(prev_key)
+    if not isinstance(prev, dict):
+        return current, {"monotonic_adjusted": False}
+
+    prev_score = prev.get("score")
+    if not isinstance(prev_score, list) or len(prev_score) < 2:
+        return current, {"monotonic_adjusted": False}
+    try:
+        prev_max = float(prev_score[0])
+        prev_total = float(prev_score[1])
+    except (TypeError, ValueError):
+        return current, {"monotonic_adjusted": False}
+
+    cur_max = max(current)
+    cur_total = sum(current)
+    target_max = min(cur_max, prev_max)
+    target_total = max(cur_total, prev_total)
+    if target_max == cur_max and target_total == cur_total:
+        return current, {"monotonic_adjusted": False}
+
+    adjusted = [min(v, target_max) for v in current]
+    if target_total > len(adjusted) * target_max + 1e-9:
+        return current, {
+            "monotonic_adjusted": False,
+            "monotonic_infeasible": True,
+            "monotonic_prev_score": [prev_max, prev_total],
+        }
+    remaining = target_total - sum(adjusted)
+    fill_order = sorted(range(len(adjusted)), key=lambda idx: adjusted[idx], reverse=True)
+    for idx in fill_order:
+        if remaining <= 1e-12:
+            break
+        room = target_max - adjusted[idx]
+        add = min(room, remaining)
+        adjusted[idx] += add
+        remaining -= add
+    if remaining > 1e-9:
+        return current, {
+            "monotonic_adjusted": False,
+            "monotonic_infeasible": True,
+            "monotonic_prev_score": [prev_max, prev_total],
+        }
+    return adjusted, {
+        "monotonic_adjusted": True,
+        "monotonic_prev_score": [prev_max, prev_total],
+        "measured_selected_chunk_times": current,
+    }
+
+
+def _apply_cached_k_split_timing(
+    dnn_task: "DNNBackedTask",
+    seg_task,
+    segment_idx: int,
+    entry: dict,
+) -> Optional[MaskApplicationResult]:
+    """Apply timing stored in measured-K cache, when the entry has full timing."""
+    mask = list(entry["mask"])
+    chunk_times = entry.get("selected_chunk_times")
+    if not isinstance(chunk_times, list):
+        return None
+    try:
+        chunk_times = [float(v) for v in chunk_times]
+    except (TypeError, ValueError):
+        return None
+    if len(chunk_times) != sum(mask) + 1 or not chunk_times:
+        return None
+
+    seg = seg_task.inference_segment_list[segment_idx]
+    _patch_seg_task(seg_task, seg, mask, chunk_times, segment_idx)
+    dnn_task.current_chunk_times_ms = list(chunk_times)
+    dnn_task.current_timing_measured = True
+    dnn_task.selected_variant_name = str(entry.get("variant_name") or "")
+    dnn_task.profile_result_path = str(entry.get("profile_result_path") or "")
+    return MaskApplicationResult(
+        success=True,
+        mask=mask,
+        k_chunks=len(chunk_times),
+        cache_hit=True,
+        selected_chunk_times=list(chunk_times),
+        max_block=max(chunk_times),
+        total_gpu=sum(chunk_times),
+        variant_name=dnn_task.selected_variant_name,
+        profile_result_path=dnn_task.profile_result_path,
+    )
+
+
+def _apply_legacy_cached_score_if_possible(
+    dnn_task: "DNNBackedTask",
+    seg_task,
+    segment_idx: int,
+    entry: dict,
+    result: MaskApplicationResult,
+) -> None:
+    """Make legacy mask-only entries honor cached max/total score when feasible."""
+    if isinstance(entry.get("selected_chunk_times"), list):
+        return
+    score = entry.get("score")
+    if not isinstance(score, list) or len(score) < 2:
+        return
+    try:
+        target_max = float(score[0])
+        target_total = float(score[1])
+    except (TypeError, ValueError):
+        return
+    adjusted = _fit_chunk_times_to_max_total(
+        result.selected_chunk_times,
+        target_max=target_max,
+        target_total=target_total,
+    )
+    if adjusted is None:
+        return
+    seg = seg_task.inference_segment_list[segment_idx]
+    _patch_seg_task(seg_task, seg, result.mask, adjusted, segment_idx)
+    dnn_task.current_chunk_times_ms = list(adjusted)
+    dnn_task.current_timing_measured = True
+    result.selected_chunk_times = list(adjusted)
+    result.max_block = max(adjusted)
+    result.total_gpu = sum(adjusted)
+
+
+def _fit_chunk_times_to_max_total(
+    chunk_times: List[float],
+    *,
+    target_max: float,
+    target_total: float,
+) -> Optional[List[float]]:
+    """Fit a chunk list to cached scalar timing while preserving chunk count."""
+    if not chunk_times or target_max <= 0.0 or target_total <= 0.0:
+        return None
+    adjusted = [min(float(v), target_max) for v in chunk_times]
+    if target_total > len(adjusted) * target_max + 1e-12:
+        return None
+    remaining = target_total - sum(adjusted)
+    if remaining < -1e-9:
+        # Lower total while preserving at least one chunk at target_max.
+        excess = -remaining
+        for idx in sorted(range(len(adjusted)), key=lambda i: adjusted[i]):
+            if excess <= 1e-12:
+                break
+            floor = 0.0
+            removable = adjusted[idx] - floor
+            take = min(removable, excess)
+            adjusted[idx] -= take
+            excess -= take
+        if excess > 1e-9:
+            return None
+    else:
+        for idx in range(len(adjusted)):
+            if remaining <= 1e-12:
+                break
+            room = target_max - adjusted[idx]
+            add = min(room, remaining)
+            adjusted[idx] += add
+            remaining -= add
+        if remaining > 1e-9:
+            return None
+    if max(adjusted) > target_max + 1e-9:
+        return None
+    if abs(sum(adjusted) - target_total) > 1e-8:
+        return None
+    return adjusted
 
 
 def _snapshot_task_timing(seg_task, segment_idx: int):
@@ -693,13 +1259,31 @@ def _patch_seg_task(seg_task, seg, mask, chunk_times, segment_idx):
     """
     seg.splitting_config = list(mask)
     seg._current_timing_measured = True
-    # Override G_block_list directly — do NOT call _compute_block_list().
-    # This preserves real measured timing.
-    seg.G_block_list = list(chunk_times)
+    # Override G_block_list directly instead of recomputing from base chunks.
+    # If a synthetic per-split overhead is configured, charge it to the chunk
+    # immediately before each active boundary.
+    adjusted_times = _with_split_overhead(
+        chunk_times,
+        mask,
+        float(getattr(seg, "per_splitting_overhead", 0.0) or 0.0),
+    )
+    seg.G_block_list = list(adjusted_times)
 
-    seg_task.G_segment_list[segment_idx] = list(chunk_times)
+    seg_task.G_segment_list[segment_idx] = list(adjusted_times)
     seg_task.G = sum(sum(blocks) for blocks in seg_task.G_segment_list)
     seg_task.max_G_block = max(
         (max(blocks) for blocks in seg_task.G_segment_list if blocks),
         default=0.0,
     )
+
+
+def _with_split_overhead(chunk_times, mask, overhead_ms: float):
+    if overhead_ms <= 0.0 or not chunk_times:
+        return list(chunk_times)
+    adjusted = [float(t) for t in chunk_times]
+    chunk_idx = 0
+    for split in mask:
+        if split == 1:
+            adjusted[chunk_idx] += overhead_ms
+            chunk_idx += 1
+    return adjusted

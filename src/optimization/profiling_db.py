@@ -140,16 +140,16 @@ class ProfilingDB:
         if not model or not variant:
             return False
 
-        full_mean = d.get("full_engine_gpu_mean_ms")
-        full_max = d.get("full_engine_gpu_max_ms")
+        full_mean = d.get("full_engine_cpu_wall_mean_ms", d.get("full_engine_gpu_mean_ms"))
+        full_max = d.get("full_engine_cpu_wall_max_ms", d.get("full_engine_gpu_max_ms"))
         chunks = d.get("chunks", [])
-        per_chunk = [c["gpu_mean_ms"] for c in chunks] if chunks else None
-        per_chunk_p99 = [c["gpu_p99_ms"] for c in chunks] if chunks else None
-        per_chunk_max = [c["gpu_max_ms"] for c in chunks if "gpu_max_ms" in c] if chunks else None
+        per_chunk = [c.get("cpu_mean_ms", c["gpu_mean_ms"]) for c in chunks] if chunks else None
+        per_chunk_p99 = [c.get("cpu_p99_ms", c["gpu_p99_ms"]) for c in chunks] if chunks else None
+        per_chunk_max = [c.get("cpu_max_ms", c.get("gpu_max_ms")) for c in chunks] if chunks else None
         if per_chunk_max is not None and len(per_chunk_max) != len(chunks):
             per_chunk_max = None
-        total = d.get("total_chunked_gpu_mean_ms")
-        total_max = d.get("total_chunked_gpu_max_ms")
+        total = d.get("total_chunked_cpu_wall_mean_ms", d.get("total_chunked_gpu_mean_ms"))
+        total_max = d.get("total_chunked_cpu_wall_max_ms", d.get("total_chunked_gpu_max_ms"))
 
         self.put(
             model, variant, precision,

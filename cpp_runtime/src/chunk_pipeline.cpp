@@ -119,21 +119,26 @@ double ChunkPipeline::_percentile(std::vector<double>& v, double p) {
     return v[lo] * (1.0 - frac) + v[lo + 1] * frac;
 }
 
-PipelineResult ChunkPipeline::run(int n_warmup, int n_iters) {
+PipelineResult ChunkPipeline::run(int n_warmup, int n_iters, bool sync_wall) {
     size_t n_chunks = chunks_.size();
 
     // ── Full engine warmup + timing ───────────────────────────────────────────
     std::vector<double> full_gpu_ms;
+    std::vector<double> full_cpu_wall_ms;
     if (full_engine_) {
         for (int i = 0; i < n_warmup; ++i) full_engine_->execute(stream_);
         cudaStreamSynchronize(stream_);
 
         CudaTimer t;
         for (int i = 0; i < n_iters; ++i) {
+            auto wall0 = wall_now();
             t.record_start(stream_);
             full_engine_->execute(stream_);
             t.record_stop(stream_);
+            if (sync_wall) cudaStreamSynchronize(stream_);
+            auto wall1 = wall_now();
             full_gpu_ms.push_back(t.elapsed_ms());
+            if (sync_wall) full_cpu_wall_ms.push_back(wall_ms(wall0, wall1));
         }
     }
 
@@ -149,21 +154,27 @@ PipelineResult ChunkPipeline::run(int n_warmup, int n_iters) {
     std::vector<std::vector<double>> chunk_gpu(n_chunks);
     std::vector<std::vector<double>> chunk_cpu(n_chunks);
     std::vector<double> total_gpu(n_iters);
+    std::vector<double> total_cpu_wall;
 
     CudaTimer t_total;
 
     for (int it = 0; it < n_iters; ++it) {
         t_total.record_start(stream_);
+        double iter_cpu_wall = 0.0;
         for (size_t c = 0; c < n_chunks; ++c) {
             auto wall0 = wall_now();
             timers[c].record_start(stream_);
             chunks_[c].execute(stream_);
             timers[c].record_stop(stream_);
+            if (sync_wall) cudaStreamSynchronize(stream_);
             auto wall1 = wall_now();
-            chunk_cpu[c].push_back(wall_ms(wall0, wall1));
+            double cpu_wall = wall_ms(wall0, wall1);
+            chunk_cpu[c].push_back(cpu_wall);
+            iter_cpu_wall += cpu_wall;
         }
         t_total.record_stop(stream_);
         total_gpu[it] = t_total.elapsed_ms();
+        if (sync_wall) total_cpu_wall.push_back(iter_cpu_wall);
 
         // Collect per-chunk GPU times (synchronizes internally).
         for (size_t c = 0; c < n_chunks; ++c)
@@ -180,12 +191,24 @@ PipelineResult ChunkPipeline::run(int n_warmup, int n_iters) {
         res.full_engine_gpu_p99_ms  = _percentile(full_gpu_ms, 99.0);
         res.full_engine_gpu_max_ms  = *std::max_element(full_gpu_ms.begin(), full_gpu_ms.end());
     }
+    if (!full_cpu_wall_ms.empty()) {
+        double sum = 0; for (auto v : full_cpu_wall_ms) sum += v;
+        res.full_engine_cpu_wall_mean_ms = sum / full_cpu_wall_ms.size();
+        res.full_engine_cpu_wall_p99_ms  = _percentile(full_cpu_wall_ms, 99.0);
+        res.full_engine_cpu_wall_max_ms  = *std::max_element(full_cpu_wall_ms.begin(), full_cpu_wall_ms.end());
+    }
 
     {
         double sum = 0; for (auto v : total_gpu) sum += v;
         res.total_chunked_gpu_mean_ms = sum / total_gpu.size();
         res.total_chunked_gpu_p99_ms  = _percentile(total_gpu, 99.0);
         res.total_chunked_gpu_max_ms  = *std::max_element(total_gpu.begin(), total_gpu.end());
+    }
+    if (!total_cpu_wall.empty()) {
+        double sum = 0; for (auto v : total_cpu_wall) sum += v;
+        res.total_chunked_cpu_wall_mean_ms = sum / total_cpu_wall.size();
+        res.total_chunked_cpu_wall_p99_ms  = _percentile(total_cpu_wall, 99.0);
+        res.total_chunked_cpu_wall_max_ms  = *std::max_element(total_cpu_wall.begin(), total_cpu_wall.end());
     }
 
     for (size_t c = 0; c < n_chunks; ++c) {
