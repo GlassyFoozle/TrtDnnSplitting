@@ -3,12 +3,16 @@ set -euo pipefail
 
 REMOTE="${1:-rubis@192.168.0.12}"
 REMOTE_DIR="${2:-/home/rubis/workspace/TrtDnnSplitting}"
+SSH_BIN="${SSH_BIN:-/usr/bin/ssh}"
+RSYNC_BIN="${RSYNC_BIN:-/usr/bin/rsync}"
+SSH_CLEAN_ENV=(env -u LD_LIBRARY_PATH -u LD_PRELOAD "${SSH_BIN}")
 
 echo "[sync] timing/cache state -> ${REMOTE}:${REMOTE_DIR}"
 
-ssh "${REMOTE}" "mkdir -p '${REMOTE_DIR}'"
+"${SSH_CLEAN_ENV[@]}" "${REMOTE}" "mkdir -p '${REMOTE_DIR}'"
 
-rsync -av --prune-empty-dirs \
+"${RSYNC_BIN}" -av --prune-empty-dirs \
+  -e "env -u LD_LIBRARY_PATH -u LD_PRELOAD ${SSH_BIN}" \
   --include='/artifacts/' \
   --include='/artifacts/chunk_cache/' \
   --include='/artifacts/chunk_cache/*/' \
