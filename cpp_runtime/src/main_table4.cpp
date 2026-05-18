@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <sched.h>
 #include <unistd.h>
+#include <cstdlib>
 
 namespace fs = std::filesystem;
 
@@ -113,7 +114,10 @@ int main(int argc, char** argv) {
     Args args = parse_args(argc, argv);
     constexpr int kWallTimeProfilingCpu = 1;
     constexpr int kWallTimeRtPriority = 80;
-    if (args.sync_wall) {
+    const char* disable_rt_env = std::getenv("TRT_DISABLE_RT_PROFILE");
+    const bool disable_rt_profile =
+        disable_rt_env != nullptr && std::string(disable_rt_env) == "1";
+    if (args.sync_wall && !disable_rt_profile) {
         bind_to_cpu(kWallTimeProfilingCpu);
         enable_sched_fifo(kWallTimeRtPriority);
     }
@@ -136,10 +140,12 @@ int main(int argc, char** argv) {
               << " / " << variant << "  precision=" << args.precision
               << "  chunks=" << n_chunks << "\n"
               << "  warmup=" << args.warmup << "  iters=" << args.iters << "\n";
-    if (args.sync_wall) {
+    if (args.sync_wall && !disable_rt_profile) {
         std::cerr << "  cpu=" << kWallTimeProfilingCpu
                   << "  scheduler=SCHED_FIFO"
                   << "  rt_priority=" << kWallTimeRtPriority << "\n";
+    } else if (args.sync_wall) {
+        std::cerr << "  cpu=unbound  scheduler=default\n";
     }
     std::cerr << std::string(60, '=') << "\n";
 

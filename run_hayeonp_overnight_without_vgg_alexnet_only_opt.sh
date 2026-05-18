@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CONFIG_DIR="${CONFIG_DIR:-configs/yaml/gpu_util_configs}"
-RUN_LABEL="${RUN_LABEL:-fig4_6models_fp32_opt1}"
+POSTFIX="${POSTFIX:-overnight_without_vgg_alexnet_only_opt}"
 CONFIGS_OVERRIDE="${CONFIGS_OVERRIDE:-}"
 MONOTONIC_K_SPLIT_CACHE="${MONOTONIC_K_SPLIT_CACHE:-0}"
 
@@ -12,25 +12,7 @@ if ! getcap "$TABLE4_RUNNER" 2>/dev/null | grep -q 'cap_sys_nice'; then
   sudo setcap cap_sys_nice+ep "$TABLE4_RUNNER"
 fi
 
-  # "1_base.yaml"
-  # "2_C_ratio_00.yaml"
-  # "3_C_ratio_25.yaml"
-  # "4_C_ratio_50.yaml"
-  # "5_task1.yaml"
-  # "6_task3.yaml"
-  # "7_singleCPU_task4.yaml"
-  # "8_singleCPU_task8.yaml"
-
-CONFIGS=(
-  "1_base.yaml"
-  "2_C_ratio_00.yaml"
-  "3_C_ratio_25.yaml"
-  "4_C_ratio_50.yaml"
-  "5_task1.yaml"
-  "6_task3.yaml"
-  "7_singleCPU_task4.yaml"
-  "8_singleCPU_task8.yaml"
-)
+CONFIGS=("1_base.yaml")
 if [[ -n "${CONFIGS_OVERRIDE}" ]]; then
   read -r -a CONFIGS <<< "${CONFIGS_OVERRIDE}"
 fi
@@ -42,7 +24,7 @@ while true; do
   for config_name in "${CONFIGS[@]}"; do
     config_path="${CONFIG_DIR}/${config_name}"
     run_suffix="${config_name%.yaml}"
-    run_name="${RUN_LABEL}_${run_suffix}"
+    run_name="${run_suffix}_${POSTFIX}"
 
     echo "============================================================"
     echo "[run] ${config_path}"
@@ -59,25 +41,23 @@ while true; do
     rm -f "${inflation_marker}"
     MONOTONIC_INFLATION_MARKER="${inflation_marker}" \
     conda run --no-capture-output -n trt python scripts/33_run_yaml_fig4_with_split_plots.py \
-      --plot-algorithms SS-tol-fb SS-tol-fb-off \
+      --plot-algorithms SS-opt UNI-opt \
       --config "${config_path}" \
-      --models alexnet resnet18 vit_b_16 vgg19 inception_v3 mobilenet_v3_small \
+      --models resnet18 vit_b_16 inception_v3 mobilenet_v3_small \
       --run-name "${run_name}" \
       --split-policy trt_fusion_safe \
-      --utilizations 0.5 0.6 0.7 0.8 \
+      --utilizations 0.5 0.6 0.7 0.8 0.9 \
       --num-tasksets 50 \
       --precision fp32 \
       --algorithms \
-        ss:heu:SS-heu \
-        ss:tol-fb:SS-tol-fb \
-        uni:heu:UNI-heu \
-        uni:tol-fb:UNI-tol-fb \
+        ss:opt:SS-opt \
+        uni:opt:UNI-opt \
       --builder-optimization-level 1 \
       --live \
       --wcet-metric max \
       --max-candidates 1000000 \
       --max-profiles 1000000 \
-      "${monotonic_k_split_cache_args[@]}"       
+      "${monotonic_k_split_cache_args[@]}"
 
     if [[ ! -s "${inflation_marker}" ]]; then
       continue
@@ -107,10 +87,10 @@ PY
         --precision fp32 \
         --policy trt_fusion_safe
     fi
-    echo "[rerun] invalidating all YAML results under ${RUN_LABEL} and restarting the suite"
+    echo "[rerun] invalidating all YAML results with postfix ${POSTFIX} and restarting the suite"
     for stale_config_name in "${CONFIGS[@]}"; do
       stale_suffix="${stale_config_name%.yaml}"
-      rm -rf "results/dnn_experiments/${RUN_LABEL}_${stale_suffix}"
+      rm -rf "results/dnn_experiments/${stale_suffix}_${POSTFIX}"
     done
     break
   done
@@ -119,13 +99,3 @@ PY
     break
   fi
 done
-
-# alexnet resnet18 vgg19 vit_b_16 inception_v3 mobilenet_v3_small
-
-        # ss:opt:SS-opt \
-        # ss:heu:SS-heu \
-        # ss:tol-fb:SS-tol-fb \
-        # ss:tol-fb-off:SS-tol-fb-off \
-        # uni:opt:UNI-opt \
-        # uni:heu:UNI-heu \
-        # uni:tol-fb:UNI-tol-fb \

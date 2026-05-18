@@ -190,6 +190,7 @@ def _update_timing(
         f"wall_mean_ms_{precision}": ch.get("cpu_mean_ms"),
         f"wall_p99_ms_{precision}": ch.get("cpu_p99_ms"),
         f"wall_max_ms_{precision}": ch.get("cpu_max_ms"),
+        f"measured_wall_max_ms_{precision}": ch.get("cpu_max_ms"),
         f"timing_basis_{precision}": "cpu_wall_sync",
         f"profile_wall_s_{precision}": profile_wall_s,
         f"profile_warmup_{precision}": int(warmup),
@@ -197,6 +198,11 @@ def _update_timing(
         f"profile_result_json_{precision}": str(result_json.relative_to(REPO)),
         f"profile_timestamp_{precision}": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
     })
+    # A fresh measurement replaces any prior adjusted value. A later repair
+    # pass may inflate it again, but that inflation should be based on this new
+    # raw measurement rather than stale provenance.
+    timing.pop(f"wall_max_ratio_inflated_{precision}", None)
+    timing.pop(f"wall_max_ratio_inflation_reasons_{precision}", None)
     _write_json(timing_path, timing)
 
 

@@ -680,7 +680,7 @@ def run_dnn_rta_algorithm(
     allow_equal_wcet_fallback: bool = False,
     per_splitting_overhead: float = 0.0,
     verbose_evaluator: bool = False,
-    enable_monotonic_k_split_cache: bool = True,
+    enable_monotonic_k_split_cache: bool = False,
 ) -> DNNAlgorithmResult:
     """
     Run a DNN-aware splitting algorithm on a taskset JSON.
@@ -2134,19 +2134,19 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
         else:
             R_list = []
 
-        # '''
-        # # Step 4: Early stop
-        # '''
-        # optimistic_R_list = get_optimistic_UNI_R(uni_tasks)
-        # for k in range(len(optimistic_R_list)):
-        #     task_k = uni_tasks[k]
-        #     D_k = task_k.D
-        #     R_k = optimistic_R_list[k]
-        #     if D_k < R_k:
-        #         is_schedulable = False
-        #         result.schedulable = is_schedulable
-        #         result.algorithm_iterations = profiling_count
-        #         return
+        '''
+        # Step 4: Early stop
+        '''
+        optimistic_R_list = get_optimistic_UNI_R(uni_tasks)
+        for k in range(len(optimistic_R_list)):
+            task_k = uni_tasks[k]
+            D_k = task_k.D
+            R_k = optimistic_R_list[k]
+            if D_k < R_k:
+                is_schedulable = False
+                result.schedulable = is_schedulable
+                result.algorithm_iterations = profiling_count
+                return
 
         # Detect not schedulable
         if not is_schedulable:

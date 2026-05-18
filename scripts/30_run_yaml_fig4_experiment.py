@@ -233,10 +233,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--monotonic-k-split-cache",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
-            "Store monotonic-adjusted K-split cache timings. "
-            "Use --no-monotonic-k-split-cache to keep raw measured timings."
+            "Legacy K-cache envelope adjustment. Disabled by default; "
+            "interval reprofiling + inflation is the active repair path."
         ),
     )
     ap.add_argument(

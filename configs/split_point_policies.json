@@ -51,7 +51,7 @@
     "five_points": [4,9,18,27,36],
     "ten_points":  [4,9,18,27,36,37,38,40,41,43],
     "major_blocks": [4,9,18,27,36,37,38,41,44],
-    "trt_fusion_safe": [4,9,13,18,22,27,31,36,38,41,44],
+    "trt_fusion_safe": [4,9,13,18,22,27,31,36,38,40,41,43,44], 
     "_notes": {
       "all": "All 45 boundaries enabled.",
       "paper_like": "Skip within-pair boundaries (Conv -> ReLU within same conv-relu pair). Keep after-relu, after-maxpool, after-avgpool, after-flatten, after-dropout in classifier.",

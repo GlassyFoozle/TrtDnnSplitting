@@ -1,15 +1,37 @@
 #!/bin/bash
 set -euo pipefail
 
-REMOTE="${1:-rubis@192.168.0.12}"
-REMOTE_DIR="${2:-/home/rubis/workspace/TrtDnnSplitting}"
+REMOTE="${1:-rubis@192.168.0.11}"
+REMOTE_DIR="${2:-/home/rubis/workspace/tensorrt/TrtDnnSplitting}"
+MODE="${3:-all}"
 SSH_BIN="${SSH_BIN:-/usr/bin/ssh}"
 RSYNC_BIN="${RSYNC_BIN:-/usr/bin/rsync}"
 SSH_CLEAN_ENV=(env -u LD_LIBRARY_PATH -u LD_PRELOAD "${SSH_BIN}")
 
-echo "[sync] timing/cache state -> ${REMOTE}:${REMOTE_DIR}"
+echo "[sync] timing/cache state -> ${REMOTE}:${REMOTE_DIR} (mode=${MODE})"
 
 "${SSH_CLEAN_ENV[@]}" "${REMOTE}" "mkdir -p '${REMOTE_DIR}'"
+
+if [[ "${MODE}" == "timing-json-only" ]]; then
+  "${SSH_CLEAN_ENV[@]}" "${REMOTE}" "mkdir -p '${REMOTE_DIR}/artifacts/chunk_cache'"
+  "${RSYNC_BIN}" -av --prune-empty-dirs \
+    -e "env -u LD_LIBRARY_PATH -u LD_PRELOAD ${SSH_BIN}" \
+    --include='*/' \
+    --include='timing.json' \
+    --exclude='*' \
+    artifacts/chunk_cache/ \
+    "${REMOTE}:${REMOTE_DIR}/artifacts/chunk_cache/"
+  "${SSH_CLEAN_ENV[@]}" "${REMOTE}" \
+    "echo '[sync] remote hostname:' \$(hostname); \
+     echo '[sync] remote ips:' \$(hostname -I 2>/dev/null || true); \
+     echo '[sync] remote repo:' \$(readlink -f '${REMOTE_DIR}'); \
+     cd '${REMOTE_DIR}' && \
+     ls -ld artifacts artifacts/chunk_cache 2>/dev/null || true; \
+     printf '[sync] remote timing.json count: ' && find artifacts/chunk_cache -name timing.json | wc -l; \
+     find artifacts/chunk_cache -name timing.json | sed -n '1,3p'"
+  echo "[sync] done"
+  exit 0
+fi
 
 "${RSYNC_BIN}" -av --prune-empty-dirs \
   -e "env -u LD_LIBRARY_PATH -u LD_PRELOAD ${SSH_BIN}" \

@@ -627,9 +627,10 @@ def backfill_interval_gpu_timing_from_evals(
 def _load_db() -> "ProfilingDB":
     from src.optimization.profiling_db import ProfilingDB
     cache_path = REPO / "results" / "optimization" / ".profiling_cache.json"
-    db = ProfilingDB(cache_path)
-    db.import_all_cpp_results(REPO)
-    return db
+    # This path is used when recording a freshly profiled mask. Re-importing
+    # every historical table4 JSON here is both unnecessary and extremely
+    # expensive because ProfilingDB flushes on every imported entry.
+    return ProfilingDB(cache_path)
 
 
 def is_mask_cached(model_name: str, mask: List[int], precision: str) -> bool:

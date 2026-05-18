@@ -887,11 +887,7 @@ def main() -> int:
             rewritten, skipped = rewrite_eval_caches(args, models, precision)
             print(f"{precision}: eval caches rewritten={rewritten} skipped={skipped}")
     db_count = 0 if args.skip_profiling_db else rebuild_profiling_db(args, models, args.precisions)
-    refreshed, skipped = refresh_k_cache(args, models, args.precisions)
-    optimistic_created, optimistic_skipped = ensure_optimistic_k_cache(args, models, args.precisions)
     print(f"profiling DB refreshed={db_count}{' (skipped)' if args.skip_profiling_db else ''}")
-    print(f"apply-k cache refreshed={refreshed} skipped={skipped}")
-    print(f"optimistic endpoint cache ensured={optimistic_created} skipped={optimistic_skipped}")
     return 0
 
 

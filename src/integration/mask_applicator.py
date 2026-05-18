@@ -121,7 +121,7 @@ def evaluate_and_apply_mask(
     iters: int = 200,
     live_budget: "Optional[LiveProfileBudget]" = None,
     verbose_evaluator: bool = False,
-    enable_monotonic_k_split_cache: bool = True,
+    enable_monotonic_k_split_cache: bool = False,
 ) -> MaskApplicationResult:
     """
     Evaluate a boundary mask via TRT profiling (or cache) and apply measured
@@ -416,7 +416,7 @@ def apply_k_chunks(
     use_k_split_cache: bool = True,
     refresh_k_split_cache: bool = False,
     require_k_split_cache: bool = False,
-    enable_monotonic_k_split_cache: bool = True,
+    enable_monotonic_k_split_cache: bool = False,
     _ensure_endpoint_cache: bool = True,
     **kwargs,
 ) -> MaskApplicationResult:
