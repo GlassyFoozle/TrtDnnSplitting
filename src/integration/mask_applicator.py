@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 import sys
 from itertools import combinations
@@ -30,7 +31,12 @@ from typing import List, Optional, TYPE_CHECKING
 
 REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO))
-_K_SPLIT_CACHE_PATH = REPO / "results" / "optimization" / "measured_k_split_cache.json"
+_K_SPLIT_CACHE_PATH = Path(
+    os.environ.get(
+        "K_SPLIT_CACHE_PATH",
+        str(REPO / "results" / "optimization" / "measured_k_split_cache.json"),
+    )
+)
 _K_SPLIT_CACHE_VERSION = 2
 
 if TYPE_CHECKING:

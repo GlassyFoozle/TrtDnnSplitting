@@ -26,12 +26,28 @@ placeholder that must be replaced by measured mask timing before RTA.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 REPO = Path(__file__).resolve().parent.parent.parent
 _BASE_VARIANT = "dag_aligned_full"
+
+
+def _env_flag(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _interval_wall_max_value(timing: dict, precision: str):
+    if _env_flag("TRT_RAW_INTERVAL_TIMING"):
+        raw = timing.get(f"measured_wall_max_ms_{precision}")
+        if raw is not None:
+            return raw
+    return timing.get(f"wall_max_ms_{precision}", timing.get(f"gpu_max_ms_{precision}"))
 
 
 @dataclass
@@ -92,7 +108,7 @@ def _read_singleton_interval_timings(
             d = json.loads(p.read_text())
             mean = d.get(f"wall_mean_ms_{precision}", d.get(f"gpu_mean_ms_{precision}"))
             p99 = d.get(f"wall_p99_ms_{precision}", d.get(f"gpu_p99_ms_{precision}"))
-            max_v = d.get(f"wall_max_ms_{precision}", d.get(f"gpu_max_ms_{precision}"))
+            max_v = _interval_wall_max_value(d, precision)
             if mean is None or p99 is None or max_v is None:
                 return None
             means.append(float(mean))

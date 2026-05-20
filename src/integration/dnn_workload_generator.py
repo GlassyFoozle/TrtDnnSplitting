@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -899,7 +900,14 @@ def _estimate_base_wcet_from_metadata(model_name: str) -> Optional[float]:
     Estimate K=1 WCET from dag_aligned_full profiling cache (mean metric).
     Used as fallback when max is unavailable.
     """
-    cache_path = REPO / "results" / "optimization" / ".profiling_cache.json"
+    cache_path = Path(
+        os.environ.get(
+            "PROFILING_CACHE_PATH",
+            str(REPO / "results" / "optimization" / ".profiling_cache.json"),
+        )
+    )
+    if not cache_path.is_absolute():
+        cache_path = REPO / cache_path
     try:
         cache_data = json.loads(cache_path.read_text())
         for precision in ("fp32", "fp16"):

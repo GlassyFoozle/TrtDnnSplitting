@@ -28,9 +28,14 @@ FIGURE_WIDTH_PER_METRIC_IN = 4.2
 
 ALGORITHM_ORDER = ["SS-tol-fb-off", "SS-tol-fb"]
 STYLE = {
+    "SS-opt": {"color": "#008000", "label": "offload-opt"},
+    "SS-heu": {"color": "#00A000", "label": "offload-heu"},
     "SS-tol": {"color": "#2F6FB3", "label": "offload-tol"},
     "SS-tol-fb-off": {"color": "#2F6FB3", "label": "offload-tol-fb (early stop=off)"},
     "SS-tol-fb": {"color": "#8000FF", "label": "offload-tol-fb"},
+    "UNI-opt": {"color": "#0000FF", "label": "uni-opt"},
+    "UNI-heu": {"color": "#00BFFF", "label": "uni-heu"},
+    "UNI-tol-fb": {"color": "#FF0000", "label": "uni-tol-fb"},
 }
 DEFAULT_X_AXIS_LABEL = "Total utilization U"
 

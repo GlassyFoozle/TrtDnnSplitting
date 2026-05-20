@@ -344,7 +344,7 @@ def main() -> int:
             data = json.loads(run_config.read_text())
             mapped = data.get("mapped_values", {})
             if mapped.get("utilization_kind") == "dnn_gpu":
-                _X_AXIS_LABEL = "GPU utilization U"
+                _X_AXIS_LABEL = "Total DNN utilization U"
         except Exception:
             pass
     series = load_series(csv_path)

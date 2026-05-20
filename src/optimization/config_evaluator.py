@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,25 @@ _CPP_RUNNER_CANDIDATES = (
     REPO / "cpp_runtime" / "build" / "table4_runner",
 )
 _CPP_RUNNER = next((p for p in _CPP_RUNNER_CANDIDATES if p.exists()), _CPP_RUNNER_CANDIDATES[0])
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _use_raw_interval_timing() -> bool:
+    return _env_flag("TRT_RAW_INTERVAL_TIMING")
+
+
+def _interval_wall_max_value(timing: dict, precision: str):
+    if _use_raw_interval_timing():
+        raw = timing.get(f"measured_wall_max_ms_{precision}")
+        if raw is not None:
+            return raw
+    return timing.get(f"wall_max_ms_{precision}", timing.get(f"gpu_max_ms_{precision}"))
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -210,7 +230,10 @@ def mask_to_variant_name(model_name: str, mask: List[int]) -> str:
 # ── Path helpers ───────────────────────────────────────────────────────────────
 
 def _eval_dir(model_name: str) -> Path:
-    return REPO / "results" / "evaluations" / model_name
+    root = Path(os.environ.get("EVALUATION_CACHE_DIR", str(REPO / "results" / "evaluations")))
+    if not root.is_absolute():
+        root = REPO / root
+    return root / model_name
 
 
 def _eval_json_path(model_name: str, variant_name: str, precision: str) -> Path:
@@ -457,14 +480,22 @@ def _backfill_interval_gpu_timing(
             f"timing_basis_{precision}": "cpu_wall_sync",
         }
         if i < len(maxs) and maxs[i] is not None:
-            update[f"gpu_max_ms_{precision}"] = maxs[i]
-            update[f"wall_max_ms_{precision}"] = maxs[i]
+            update[f"measured_wall_max_ms_{precision}"] = maxs[i]
+            if _use_raw_interval_timing() and t.get(f"wall_max_ratio_inflated_{precision}"):
+                pass
+            else:
+                update[f"gpu_max_ms_{precision}"] = maxs[i]
+                update[f"wall_max_ms_{precision}"] = maxs[i]
+                update[f"wall_max_ratio_inflated_{precision}"] = False
         if result.profile_wall_s is not None:
             update[f"source_eval_profile_wall_s_{precision}"] = result.profile_wall_s
         if result.profile_warmup is not None:
             update[f"profile_warmup_{precision}"] = result.profile_warmup
         if result.profile_iters is not None:
             update[f"profile_iters_{precision}"] = result.profile_iters
+        update[f"timing_mode_{precision}"] = (
+            "raw_no_inflation" if _use_raw_interval_timing() else "inflation_eligible"
+        )
         t.update(update)
         _save_interval_timing(model_name, grp, t)
 
@@ -476,6 +507,9 @@ def _inflate_new_profile_intervals_and_refresh_result(
     result: "EvaluationResult",
 ) -> None:
     """Propagate ratio inflation from newly profiled intervals, then reload maxes."""
+    if _env_flag("TRT_DISABLE_MONOTONIC_INFLATION") or _use_raw_interval_timing():
+        return
+
     from src.optimization.monotonic_interval_repair import inflate_children_by_parent_ratio
 
     # A freshly measured interval may be either a new parent or an existing
@@ -506,7 +540,7 @@ def can_assemble_from_intervals(
         if not (
             (t.get(f"wall_mean_ms_{precision}") or t.get(f"gpu_mean_ms_{precision}"))
             and (t.get(f"wall_p99_ms_{precision}") or t.get(f"gpu_p99_ms_{precision}"))
-            and (t.get(f"wall_max_ms_{precision}") or t.get(f"gpu_max_ms_{precision}"))
+            and _interval_wall_max_value(t, precision)
         ):
             return False
     return True
@@ -535,7 +569,7 @@ def assemble_from_intervals(
         t = _load_interval_timing(model_name, grp)
         means.append(float(t.get(f"wall_mean_ms_{precision}", t.get(f"gpu_mean_ms_{precision}", 0.0))))
         p99s.append(float(t.get(f"wall_p99_ms_{precision}", t.get(f"gpu_p99_ms_{precision}", 0.0))))
-        maxs.append(float(t.get(f"wall_max_ms_{precision}", t.get(f"gpu_max_ms_{precision}", 0.0))))
+        maxs.append(float(_interval_wall_max_value(t, precision) or 0.0))
 
     chunked_mean = sum(means) if means else None
     chunked_p99  = sum(p99s)  if p99s  else None
@@ -626,7 +660,14 @@ def backfill_interval_gpu_timing_from_evals(
 
 def _load_db() -> "ProfilingDB":
     from src.optimization.profiling_db import ProfilingDB
-    cache_path = REPO / "results" / "optimization" / ".profiling_cache.json"
+    cache_path = Path(
+        os.environ.get(
+            "PROFILING_CACHE_PATH",
+            str(REPO / "results" / "optimization" / ".profiling_cache.json"),
+        )
+    )
+    if not cache_path.is_absolute():
+        cache_path = REPO / cache_path
     # This path is used when recording a freshly profiled mask. Re-importing
     # every historical table4 JSON here is both unnecessary and extremely
     # expensive because ProfilingDB flushes on every imported entry.
@@ -685,7 +726,7 @@ def _refresh_cached_result_maxes_from_intervals(result: EvaluationResult) -> Eva
     maxs: list[float] = []
     for grp in result.groups:
         timing = _load_interval_timing(result.model_name, grp)
-        value = timing.get(f"wall_max_ms_{result.precision}")
+        value = _interval_wall_max_value(timing, result.precision)
         if value is None:
             return result
         maxs.append(float(value))

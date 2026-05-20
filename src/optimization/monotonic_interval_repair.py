@@ -17,6 +17,16 @@ def inflate_children_by_parent_ratio(
     *,
     seed_intervals: Iterable[tuple[int, int]] | None = None,
 ) -> dict:
+    disabled = os.environ.get("TRT_DISABLE_MONOTONIC_INFLATION", "").strip().lower()
+    raw_mode = os.environ.get("TRT_RAW_INTERVAL_TIMING", "").strip().lower()
+    if disabled not in {"", "0", "false", "no", "off"} or raw_mode not in {"", "0", "false", "no", "off"}:
+        return {
+            "constraints": 0,
+            "updated_intervals": 0,
+            "changed_bounds": [],
+            "remaining_violations": [],
+        }
+
     by_bounds, wall_max = _load_model_intervals(model_name, precision)
     if seed_intervals is None:
         parents = set(by_bounds)
