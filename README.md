@@ -1,109 +1,87 @@
 # TrtDnnSplitting
 
-Standalone implementation of DNN-splitting schedulability analysis for NVIDIA Jetson Orin.
-Profiles TensorRT split-compiled DNN inference segments, then applies SS and UNI
-real-time scheduling analysis to find the minimum-splitting configuration that meets
-task deadlines.
+TensorRT-backed DNN splitting and schedulability analysis for NVIDIA Jetson
+Orin. The repository implements SS and UNI variants with heuristic and
+tolerance-feedback splitting, generates model-specific TensorRT artifacts on
+the target device, and evaluates schedulability over generated task sets.
+
+The canonical rebuttal experiment is
+[`run_hayeonp_no_inflation.sh`](run_hayeonp_no_inflation.sh). It evaluates six
+models over eight workload configurations using raw measured interval timing,
+without monotonic timing inflation.
+
+## Reproduce the canonical experiment
+
+1. Prepare the Jetson and the `trt` Conda environment as described in
+   [`INSTALL.md`](INSTALL.md).
+2. Clone this repository on the target device.
+3. Run a small smoke test:
+
+   ```bash
+   CONFIGS_OVERRIDE=1_base.yaml \
+   MODELS_OVERRIDE=alexnet \
+   UTILIZATIONS_OVERRIDE=0.5 \
+   NUM_TASKSETS=1 \
+   RUN_LABEL=smoke_no_inflation \
+   ./run_hayeonp_no_inflation.sh
+   ```
+
+4. Run the full experiment:
+
+   ```bash
+   ./run_hayeonp_no_inflation.sh
+   ```
+
+The runner builds `table4_runner` if needed, checks the Python/TensorRT
+environment, creates ONNX and TensorRT engines lazily, profiles missing masks,
+and writes all generated data below `artifacts/` and `results/`. Generated
+artifacts and results are intentionally excluded from Git.
+
+See [`docs/RUN_HAYEONP_NO_INFLATION.md`](docs/RUN_HAYEONP_NO_INFLATION.md) for
+the complete procedure, cache semantics, environment overrides, output layout,
+and recovery instructions.
+
+## Experiment scope
+
+- Models: AlexNet, ResNet18, ViT-B/16, VGG19, InceptionV3, MobileNetV3-Small
+- Workloads: eight YAML configurations in `configs/yaml/gpu_util_configs/`
+- Utilizations: 0.5, 0.6, 0.7, 0.8, 0.9
+- Task sets: 50 per utilization by default
+- Precision: FP32
+- Split policy: `trt_fusion_safe`
+- Algorithms: SS-heuristic, SS-tolerance-feedback, UNI-heuristic,
+  UNI-tolerance-feedback
+- WCET metric: measured maximum CPU wall time around synchronized TensorRT
+  execution
 
 ## Repository layout
 
-```
-TrtDnnSplitting/
-├── configs/
-│   ├── yaml/                     # Fig.4 experiment YAML configs (5 variants)
-│   ├── dnn_tasksets/             # Hand-crafted taskset JSON files
-│   └── split_point_policies.json # Per-model boundary policies (all/major_blocks/…)
-├── cpp_runtime/                  # C++ profiler source (table4_runner)
-│   ├── CMakeLists.txt
-│   ├── include/
-│   └── src/
-├── scripts/
-│   ├── 10_inspect_single_taskset.py   # Run one algorithm on one taskset JSON
-│   ├── 20_preflight_design.py         # Live design preflight: export/build/profile base
-│   ├── 30_run_yaml_fig4_experiment.py # Fig.4 schedulability sweep (YAML-driven)
-│   ├── 31_plot_fig4.py                # Plot Fig.4 results
-│   ├── 40_run_fig5_design_time.py     # Fig.5 design-time / profiling-cost sweep
-│   ├── 41_plot_fig5.py                # Plot Fig.5 results
-│   ├── internal_export_selected_split.py   # (called by compiler.py — not user-facing)
-│   └── internal_build_selected_engines.sh  # (called by compiler.py — not user-facing)
-├── src/
-│   ├── rta/          # SS + UNI scheduling analysis (ported from DNNSplitting paper)
-│   ├── integration/  # DNN task model, algorithm runner, mask applicator
-│   ├── optimization/ # Mask evaluator, compiler, profiling DB
-│   ├── splitting/    # DAG-aligned split generation
-│   ├── export/       # ONNX exporter
-│   ├── models/       # Model registry (AlexNet, ResNet18, VGG19)
-│   └── utils/        # Path helpers
-├── tests/            # Unit tests
-├── artifacts/        # Generated: ONNX models, TRT engines, split configs
-└── results/          # Generated: evaluation JSONs, plots
+```text
+configs/                       workload and split-policy definitions
+artifacts/split_configs/       versioned baseline split metadata
+cpp_runtime/                   C++ TensorRT wall-time profiler
+scripts/                       experiment, plotting, export, and build tools
+src/                           RTA, integration, splitting, and optimization code
+tests/                         unit and regression tests
+artifacts/                     generated ONNX/engine/interval caches (ignored)
+results/                       generated experiment outputs (ignored)
 ```
 
-## Quick start
+The RTA implementation under `src/rta/` is self-contained; no sibling
+DNNSplitting repository is required.
 
-### 1. Build the C++ profiler
+## Documentation
+
+- [`INSTALL.md`](INSTALL.md): target prerequisites and installation
+- [`docs/RUN_HAYEONP_NO_INFLATION.md`](docs/RUN_HAYEONP_NO_INFLATION.md): canonical experiment
+- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md): runner controls and outputs
+- [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md): experiment semantics
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md): common failures
+- [`docs/E2E_ARCHITECTURE.md`](docs/E2E_ARCHITECTURE.md): source and artifact data flow
+- [`docs/report_trt_fusion_safe_model_summary_ko.md`](docs/report_trt_fusion_safe_model_summary_ko.md): split-policy rationale
+
+## Tests
 
 ```bash
-cd cpp_runtime
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+conda run --no-capture-output -n trt python -m pytest -q
 ```
-
-### 2. Dry-run (no GPU required)
-
-Uses pre-profiled `dag_aligned_full` timings for schedulability analysis without
-building any new engines:
-
-```bash
-python scripts/30_run_yaml_fig4_experiment.py \
-    --yaml configs/yaml/1_GPU0.6-1.0_task8_ov5.yaml \
-    --models alexnet resnet18 vgg19 \
-    --policy major_blocks \
-    --n-tasksets 2 \
-    --dry-run
-```
-
-### 3. Live mode (Jetson Orin with TensorRT)
-
-Remove `--dry-run` and add `--max-real-profiles N` to cap GPU profiling cost:
-
-```bash
-python scripts/30_run_yaml_fig4_experiment.py \
-    --yaml configs/yaml/1_GPU0.6-1.0_task8_ov5.yaml \
-    --models alexnet resnet18 vgg19 \
-    --policy major_blocks \
-    --n-tasksets 50 \
-    --max-real-profiles 500
-```
-
-### 4. Plot results
-
-```bash
-python scripts/31_plot_fig4.py --results results/yaml_fig4/
-```
-
-## Algorithms
-
-| Flag | Name | Description |
-|------|------|-------------|
-| `ss:tol-fb` | SS_ours | SS RTA + greedy tolerance-feedback splitting |
-| `ss:opt` | SS_Buttazzo | SS RTA + BFS-optimal splitting |
-| `uni:tol-fb` | UNI_ours | UNI RTA + greedy tolerance-feedback splitting |
-| `uni:opt` | UNI_Buttazzo | UNI RTA + BFS-optimal splitting |
-
-## Dependencies
-
-- Python ≥ 3.8 (no PyYAML required — YAML parser is built-in)
-- PyTorch (for ONNX export)
-- TensorRT ≥ 8.6 (for engine build/profile; not required for dry-run)
-- ONNX Runtime (optional; for verification)
-- matplotlib (for plotting)
-- numpy
-
-See `INSTALL.md` for detailed setup instructions.
-
-## Self-contained RTA
-
-`src/rta/` contains the scheduling analysis code ported from the DNNSplitting
-research codebase. **No external `../DNNSplitting` sibling repo is required.**

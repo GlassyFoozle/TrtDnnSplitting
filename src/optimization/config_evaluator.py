@@ -900,6 +900,7 @@ def evaluate_mask(
     profile: bool = True,
     force: bool = False,
     dry_run: bool = False,
+    ignore_result_cache: bool = False,
 ) -> EvaluationResult:
     """
     Evaluate a boundary mask end-to-end: generate config → export → build → profile.
@@ -918,6 +919,8 @@ def evaluate_mask(
     profile       : run GPU profiler
     force         : re-export/rebuild/reprofile even if artifacts exist
     dry_run       : print plan without executing anything
+    ignore_result_cache: bypass only the exact-mask result cache while retaining
+                     normal interval ONNX/engine reuse (timing experiments)
 
     Returns
     -------
@@ -926,13 +929,25 @@ def evaluate_mask(
     # ── 0. Early cache check (torch-free) ────────────────────────────────────
     # For list masks we can compute the variant name and check the cache before
     # importing selective_split (which imports torch at module level).
-    if not force and not dry_run and isinstance(mask, list) and variant_name is None:
+    if (
+        not force
+        and not dry_run
+        and not ignore_result_cache
+        and isinstance(mask, list)
+        and variant_name is None
+    ):
         _early_variant = mask_to_variant_name(model_name, list(mask))
         _early_cached = _load_cached_result(model_name, _early_variant, precision)
         if _early_cached is not None and _early_cached.ok():
             print(f"\n[evaluator] {model_name}/{_early_variant}  ({precision})  → cache hit (early)")
             return _early_cached
-    elif not force and not dry_run and isinstance(mask, list) and variant_name is not None:
+    elif (
+        not force
+        and not dry_run
+        and not ignore_result_cache
+        and isinstance(mask, list)
+        and variant_name is not None
+    ):
         _early_cached = _load_cached_result(model_name, variant_name, precision)
         if _early_cached is not None and _early_cached.ok():
             print(f"\n[evaluator] {model_name}/{variant_name}  ({precision})  → cache hit (early)")
@@ -970,7 +985,7 @@ def evaluate_mask(
     print(f"  mask: {''.join(str(b) for b in mask_list)}")
 
     # ── 3. Cache check ────────────────────────────────────────────────────────
-    if not force and not dry_run:
+    if not force and not dry_run and not ignore_result_cache:
         cached = _load_cached_result(model_name, variant_name, precision)
         if cached is not None and cached.ok():
             cached = _refresh_cached_result_maxes_from_intervals(cached)

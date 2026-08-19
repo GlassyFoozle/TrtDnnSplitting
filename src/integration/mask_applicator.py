@@ -128,6 +128,8 @@ def evaluate_and_apply_mask(
     live_budget: "Optional[LiveProfileBudget]" = None,
     verbose_evaluator: bool = False,
     enable_monotonic_k_split_cache: bool = False,
+    timing_recorder=None,
+    use_k_split_cache: bool = True,
 ) -> MaskApplicationResult:
     """
     Evaluate a boundary mask via TRT profiling (or cache) and apply measured
@@ -168,11 +170,32 @@ def evaluate_and_apply_mask(
             error="dry_run does not provide measured per-chunk timing",
         )
 
+    # The timing experiment uses a fresh logical configuration cache for every
+    # taskset/algorithm run. A first-seen mask must be profiled even if an exact
+    # result JSON or interval timing is already available. ONNX/engine artifacts
+    # remain cacheable and are handled by evaluate_mask below.
+    timing_event = None
+    if timing_recorder is not None:
+        begin_configuration = getattr(timing_recorder, "begin_configuration", None)
+        if callable(begin_configuration):
+            timing_event = begin_configuration(
+                dnn_task.model_name, precision, mask, warmup, iters
+            )
+    logical_first_seen = timing_event is not None
+    force_first_seen_profile = bool(
+        logical_first_seen
+        and getattr(timing_recorder, "requires_actual_profile", False)
+    )
+    virtual_cache_only = bool(
+        logical_first_seen
+        and getattr(timing_recorder, "virtual_cache_only", False)
+    )
+
     # Cache order for live/evaluation mode:
     #   1. exact mask EvaluationResult JSON (handled by evaluate_mask below),
     #   2. interval timing cache assembly,
     #   3. live export/build/profile.
-    if not force:
+    if not force and not force_first_seen_profile:
         from src.optimization.config_evaluator import (
             is_mask_cached, can_assemble_from_intervals, assemble_from_intervals,
         )
@@ -201,6 +224,23 @@ def evaluate_and_apply_mask(
                         variant_name=assembled.variant_name,
                         profile_result_path=assembled.result_json_path,
                     )
+
+    if virtual_cache_only:
+        from src.optimization.config_evaluator import is_mask_cached
+        if not is_mask_cached(dnn_task.model_name, mask, precision):
+            failed = MaskApplicationResult(
+                success=False,
+                mask=list(mask),
+                k_chunks=k,
+                model_name=dnn_task.model_name,
+                error="virtual_profile_cache_miss",
+            )
+            finish_configuration = getattr(
+                timing_recorder, "finish_configuration", None
+            )
+            if callable(finish_configuration):
+                finish_configuration(timing_event, failed)
+            return failed
 
     # ── live budget pre-check (real eval only) ────────────────────────────────
     live_cache_miss_variant = ""
@@ -260,7 +300,13 @@ def evaluate_and_apply_mask(
         force=force,
         export=export,
         build=build,
+        ignore_result_cache=force_first_seen_profile,
     )
+
+    if timing_recorder is not None and timing_event is not None:
+        finish_configuration = getattr(timing_recorder, "finish_configuration", None)
+        if callable(finish_configuration):
+            finish_configuration(timing_event, eval_result)
 
     if verbose_evaluator and not eval_result.cache_hit and (
         eval_result.exported or eval_result.built or eval_result.profiled

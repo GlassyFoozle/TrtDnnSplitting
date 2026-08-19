@@ -9,28 +9,20 @@ build/
 .venv/
 *.pyc
 
-# Generated artifacts (keep .gitkeep)
-# Split configs are generated — except dag_aligned_full which ships for dry-run
-artifacts/split_configs/
+# Generated artifacts. Only the baseline split metadata is versioned.
+artifacts/**
+!artifacts/.gitkeep
 !artifacts/split_configs/
 !artifacts/split_configs/*/
 !artifacts/split_configs/*/dag_aligned_full.json
-artifacts/onnx/
-artifacts/engines/
 
-# Generated results (keep .gitkeep)
-results/evaluations/
-results/table4/
-results/optimization/
-results/yaml_fig4/
-results/fig5/
-results/plots/
-results/dnn_experiments/
-results/dnn_algorithms/
+# Generated experiment results. Keep only the directory placeholder.
+results/**
+!results/.gitkeep
+results_*/
 
-# C++ build
-cpp_runtime/build/
-cpp_runtime/build_sync_wall/
+# C++ build directories
+cpp_runtime/build*/
 
 # Profiling cache
 *.profiling_cache.json
@@ -43,24 +35,19 @@ cpp_runtime/build_sync_wall/
 .idea/
 .vscode/
 
-# Live profiling generated caches/artifacts
-artifacts/chunk_cache/
-artifacts/logs/
-artifacts/onnx/
-artifacts/engines/
-
-# Ignore all generated split configs except baseline dag_aligned_full configs
-artifacts/split_configs/**
-!artifacts/split_configs/
-!artifacts/split_configs/*/
-!artifacts/split_configs/*/dag_aligned_full.json
-
-# Root-level generated result logs/reports
-results/*.log
-results/*.md
-results/sim_zip_analysis/
-
 # Local backups / archives
 backups/
 *.zip
+*.tar.gz
+*.backup
+*.backup*
+*.bak
 configs/yaml/260511_configs/
+
+# Local experiment notes and paper drafts
+DNNSplit.pdf
+RTSS26_submission.pdf
+rebuttal.md
+/*endpoint_chunk_times*.csv
+tmp/
+tmp.txt
