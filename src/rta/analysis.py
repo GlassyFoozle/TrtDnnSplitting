@@ -4,6 +4,7 @@ from copy import deepcopy
 from src.rta.task import InferenceSegment
 
 NUMERATOR_EXPLOSION_LIMIT = 10**18
+FIXED_POINT_ITERATION_LIMIT = 10000
 FLOAT_TIE_EPSILON = 1e-12
 _SS_R_CHOICE_STATS = None
 
@@ -66,7 +67,7 @@ def get_max_lower_blocking(sorted_task_list, i):
     lp_tasks = sorted_task_list[i + 1:]
     if not lp_tasks:
         return 0
-    return max(task_l.max_G_block for task_l in lp_tasks)
+    return max(math.nextafter(task_l.max_G_block, -math.inf) for task_l in lp_tasks)
 
 
 def get_B_i_req(sorted_task_list, i, R_list):
@@ -80,7 +81,7 @@ def get_B_i_req(sorted_task_list, i, R_list):
             B_i_j = max_lower_blocking
             for h in range(i):
                 task_h = sorted_task_list[h]
-                numerator = prev_B_i_j + R_list[h] - task_h.C
+                numerator = prev_B_i_j + R_list[h] - task_h.C + task_i.G
                 jobs = ceil_div_with_context(
                     numerator, task_h.T, "get_B_i_req",
                     task_i_idx=i, task_h_idx=h,
@@ -168,14 +169,14 @@ def get_SS_R_job(sorted_task_list, i, R_list):
 def get_SS_R(sorted_task_list, i, R_list):
     task_i = sorted_task_list[i]
     R_req, R_req_B_high, R_req_B_low, _ = get_SS_R_req(sorted_task_list, i, R_list)
-    R_job, R_job_B_high, R_job_B_low, _ = get_SS_R_job(sorted_task_list, i, R_list)
+    # R_job, R_job_B_high, R_job_B_low, _ = get_SS_R_job(sorted_task_list, i, R_list)
 
-    if R_req <= R_job + FLOAT_TIE_EPSILON:
-        R, B_high, B_low = R_req, R_req_B_high, R_req_B_low
-        _record_SS_R_choice("req")
-    else:
-        R, B_high, B_low = R_job, R_job_B_high, R_job_B_low
-        _record_SS_R_choice("job")
+    # if R_req <= R_job + FLOAT_TIE_EPSILON:
+    R, B_high, B_low = R_req, R_req_B_high, R_req_B_low
+    _record_SS_R_choice("req")
+    # else:
+    #     R, B_high, B_low = R_job, R_job_B_high, R_job_B_low
+    #     _record_SS_R_choice("job")
 
     I_i = R - task_i.C - task_i.G - B_high - B_low
     return R, B_high, B_low, I_i
@@ -382,12 +383,34 @@ def get_UNI_R_and_K(sorted_task_list, i):
     C_i = task_i.C + task_i.G
     C_i_last = get_UNI_last_segment(task_i)
 
+    prefix_util = sum(
+        (task_h.C + task_h.G) / task_h.T
+        for task_h in sorted_task_list[: i + 1]
+    )
+    if prefix_util > 1.0 + FLOAT_TIE_EPSILON:
+        raise NumeratorExplosionError(
+            f"[{os.getpid()}] UNI prefix utilization exceeds 1.0 in "
+            f"get_UNI_R_and_K: task_i_idx={i} task_i_id={task_i.id} "
+            f"prefix_utilization={prefix_util:.12f}"
+        )
+
     # Busy period
     B_i = get_max_lower_blocking(sorted_task_list, i)
-    
+
     I_i_prev = B_i + C_i
     I_i = 0
+
+    iterations = 0
     while True:
+        iterations += 1
+        if iterations > FIXED_POINT_ITERATION_LIMIT:
+            raise NumeratorExplosionError(
+                f"[{os.getpid()}] Fixed-point iteration limit exceeded in "
+                f"get_UNI_R_and_K_busy_period: task_i_idx={i} "
+                f"task_i_id={task_i.id} iterations={iterations} "
+                f"limit={FIXED_POINT_ITERATION_LIMIT} I_i_prev={I_i_prev}"
+            )
+
         I_i = B_i
         for h in range(i + 1): # Include task i itself
             task_h = sorted_task_list[h]
@@ -420,7 +443,18 @@ def get_UNI_R_and_K(sorted_task_list, i):
             s_i_k_prev += C_h
 
         s_i_k = 0
+        iterations = 0
         while True:
+            iterations += 1
+            if iterations > FIXED_POINT_ITERATION_LIMIT:
+                raise NumeratorExplosionError(
+                    f"[{os.getpid()}] Fixed-point iteration limit exceeded in "
+                    f"get_UNI_R_and_K_start_time: task_i_idx={i} "
+                    f"task_i_id={task_i.id} k={k} iterations={iterations} "
+                    f"limit={FIXED_POINT_ITERATION_LIMIT} "
+                    f"s_i_k_prev={s_i_k_prev}"
+                )
+
             s_i_k = B_i + k * C_i - C_i_last
             for h in range(i):
                 task_h = sorted_task_list[h]
@@ -461,12 +495,12 @@ def get_UNI_tolerance(sorted_task_list, i, K_i):
 
         # refer Eq. (4) in Aromolo. et. al.
         t_candidates = []
-        for j in range(i): # higher priorities
+        for j in range(i+1): # higher priorities
             task_j = sorted_task_list[j]
             h = 1 
             while True:
-                candidate = h * task_j.T                
-                if candidate < t_min:
+                candidate = math.nextafter(h * task_j.T, -math.inf)
+                if candidate <= t_min:
                     h += 1
                     continue            
                 

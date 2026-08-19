@@ -1,166 +1,87 @@
-# TrtDnnSplitting — End-to-End Architecture
+# End-to-End Architecture
 
-## High-Level Data Flow
+## Live data flow
 
-```
-Taskset JSON
-    │
-    ▼
-generate_dnn_taskset()              ← dnn_taskset_loader.py
-    │  Loads per-chunk base times from artifacts/split_configs/*/dag_aligned_full.json
-    │  Falls back to zeros if no profiling available (dry-run safe)
-    ▼
-DNNBackedTask list
-    │
-    ▼
-build_task_set_dict()               ← dnnsplitting_adapter.py
-    │  Creates SegInfTask (src.rta.task) for each DNN task
-    │  base_block_list = base_chunk_times_ms from dag_aligned_full
-    ▼
-run_dnn_rta_algorithm()             ← dnn_algorithm_runner.py
-    │
-    ├─ _dispatch_ss() ──────────────────────────────────────────────────────┐
-    │      ├─ ss:tol-fb  → _run_ss_tol_fb()                                │
-    │      └─ ss:opt     → _paper_no_split_gate_ss() → _run_ss_opt_paper() │
-    │                                                                       │
-    └─ _dispatch_uni() ─────────────────────────────────────────────────────┘
-           ├─ uni:tol-fb → _run_uni_tol_fb()
-           └─ uni:opt    → _paper_no_split_gate_uni() → _run_uni_opt_paper()
-                │
-                ▼
-        evaluate_and_apply_mask()   ← mask_applicator.py
-                │
-                ├─ dry_run=True  → _apply_mask_to_chunk_times() + _patch_seg_task()
-                └─ dry_run=False → evaluate_mask() → TRT engine build + profile
+```text
+run_hayeonp_no_inflation.sh
+  -> scripts/33_run_yaml_fig4_with_split_plots.py
+     -> scripts/30_run_yaml_fig4_experiment.py
+        -> generate YAML task sets
+        -> run_dnn_rta_algorithm()
+           -> SS/UNI heuristic or tolerance-feedback search
+           -> evaluate_and_apply_mask()
+              -> evaluate_mask()
+                 -> generate selected split config
+                 -> export missing interval ONNX
+                 -> build missing interval TensorRT engine
+                 -> profile with C++ table4_runner
+                 -> update interval and exact-mask caches
+     -> scripts/32_plot_early_stop_counters.py
+     -> scripts/31_plot_fig4.py
 ```
 
-## Module Map
+## Versioned inputs
 
-### src/rta/
+- `configs/yaml/gpu_util_configs/*.yaml`: workload distributions
+- `configs/split_point_policies.json`: enabled boundaries per model and policy
+- `artifacts/split_configs/<model>/dag_aligned_full.json`: baseline graph,
+  chunk, tensor-shape, and ONNX/engine path metadata
+- `src/`: task generation, RTA, split search, export, build, and cache logic
+- `cpp_runtime/`: synchronized TensorRT profiling runtime
 
-Self-contained RTA ported from the DNNSplitting paper. No external dependencies.
+The baseline JSON files are metadata inputs. Device timing and TensorRT engines
+are generated locally.
 
-| File | Description |
-|------|-------------|
-| `task.py` | `SegInfTask`, `InferenceSegment` — task model; SS↔UNI conversion |
-| `analysis.py` | `get_SS_R()`, `get_UNI_R_and_K()`, `convert_task_list_to_SS/UNI()`, RTA core |
+## Generated state
 
-### src/integration/
+### Interval cache
 
-Bridge layer: loads DNN tasks, runs algorithms, collects results.
+`artifacts/chunk_cache/<model>/int_<start>_<end>/` is the canonical reusable
+store for one contiguous group of base chunks. It contains ONNX, precision-
+specific engines, and `timing.json`. Different masks reuse a shared interval
+when their `source_chunk_ids` match.
 
-| File | Role |
-|------|------|
-| `dnn_task.py` | `DNNBackedTask` dataclass |
-| `dnn_taskset_loader.py` | Parse taskset JSON → `DNNBackedTask` list |
-| `dnn_taskset_generator.py` | Generate single taskset JSON from params |
-| `dnn_workload_generator.py` | `WorkloadConfig` + `generate_tasksets()` for batch generation |
-| `dnnsplitting_adapter.py` | `dnn_task_to_seginftask()`, `build_task_set_dict()` |
-| `mask_applicator.py` | `evaluate_and_apply_mask()`, dry/live dispatch |
-| `dnn_algorithm_runner.py` | All four algorithm implementations + dispatcher |
-| `split_point_policy.py` | `get_enabled_boundaries()`, `apply_policy_to_mask()` |
-| `paper_style_search.py` | `search_optimal_ss_mask()`, `search_heuristic_ss_mask()`, etc. |
+### Exact-mask evaluation cache
 
-### src/optimization/
+`results/evaluations_no_inflation/<model>/` stores the assembled timing result
+for a complete boundary mask. Cache validity checks reject malformed results,
+results with errors, and timing arrays whose size does not match the mask.
 
-TRT engine builds and profiling cache management.
+### Measured best-K and profiling caches
 
-| File | Role |
-|------|------|
-| `config_evaluator.py` | `evaluate_mask()` — builds TRT engine and runs timing; manages interval cache |
-| `candidate_space.py` | `load_candidate_space()` — loads dag_aligned_full configs |
-| `compiler.py` | Orchestrates ONNX export + TRT engine build (subprocess wrappers) |
-| `profiling_db.py` | `ProfilingDB` — flat JSON cache for per-variant profiling results |
+The no-inflation runner uses separate files under `results/optimization/` so
+raw-timing results cannot be confused with inflation-enabled experiments.
+Monotonic cache adjustment is disabled, but ordinary measured best-K reuse is
+enabled.
 
-### src/splitting/
+## K=1 semantics
 
-Split-point generation and mask computation.
+K=1 is the all-zero boundary mask. In live mode, task generation requests a
+device-measured single-interval result. When missing, the normal evaluator
+exports the whole-model interval, builds its engine, profiles it, and caches
+the result. K=1 is not estimated by summing independently measured split
+chunks.
 
-| File | Role |
-|------|------|
-| `dag_aligned_splitter.py` | Enumerate boundaries aligned to DNN layer graph |
-| `selective_splitter.py` | Apply selective split patterns |
+## Timing semantics
 
-## Key Invariants
+`table4_runner` reports CUDA-event GPU timing and CPU wall timing around
+synchronized execution. The canonical experiment uses the maximum CPU wall
+time for task WCET. `TRT_RAW_INTERVAL_TIMING=1` and
+`TRT_DISABLE_MONOTONIC_INFLATION=1` preserve raw interval measurements.
 
-**base_chunk_times_ms**: Per-chunk GPU times from `dag_aligned_full.json`. Loaded once per
-model; shared across all masks evaluated for that task. Zero in fresh clone (no live profiling).
+## Algorithm path
 
-**SegInfTask construction**: Uses `dummy_G = max(N, 1)` to pass integer-unit validation in
-`InferenceSegment.__init__`, then overrides `base_block_list` with real float ms values.
+`src/integration/dnn_algorithm_runner.py` constructs the SS or UNI task view,
+checks the current configuration, invokes the selected split search, applies
+measured masks, and performs the final RTA/tolerance validation. The local
+`src/rta/` implementation is self-contained.
 
-**K=1 baseline timing**: The all-zero mask (K=1, no split) always uses `sum(base_chunk_times_ms)`
-from the pre-profiled `dag_aligned_full` baseline — never triggers engine export/build/profile.
-In live mode, `evaluate_and_apply_mask` short-circuits any all-zero mask to this baseline path,
-returning `cache_hit=True`. If `base_chunk_times_ms` are all zero in live mode, an error is
-returned directing the user to run `scripts/20_preflight_design.py`.
+`src/integration/taskset_timing.py` records taskset-local search, profiling,
+and optimization timing when the corresponding optional timing mode is
+enabled. Aggregate timing columns are always emitted by the YAML runner.
 
-**K=1 accounting (`is_k1_baseline`)**: Both K=1 return paths set
-`MaskApplicationResult.is_k1_baseline=True`. `ProfilingStats.update()` checks this flag first
-and routes to `baseline_k1_hits`, never to `real_profiles`, `cache_hits`, or
-`dry_run_evaluations`. This prevents K=1 live-mode errors from inflating `real_profiles`.
+## Portability boundary
 
-**K=1 initialization**: All eight algorithms start from the all-zero mask (no-split) state:
-- `ss:opt` and `uni:opt`: via `_paper_no_split_gate_ss/uni()` → `_run_ss/uni_single`
-- `ss:tol-fb`, `ss:tol`: explicit `apply_no_split_mask()` loop at function entry
-- `uni:tol-fb`, `uni:tol`, `uni:single`: explicit `apply_no_split_mask()` loop at function entry
-  (added for SS/UNI accounting consistency; G=0 fix in `task.py` makes this safe)
-
-**Policy-limited feasibility probe**: `_run_ss_opt_paper()` and `_run_ss_heu_paper()` use
-`apply_policy_to_mask([1]*(N-1), enabled)` as the full-split probe — not the raw all-ones mask.
-This ensures the infeasibility gate is consistent with the policy-constrained search space.
-
-**Cache validity (is_mask_cached)**: Returns `True` only if:
-1. JSON parses successfully
-2. No `error` field
-3. `per_chunk_gpu_mean_ms` present
-4. `len(per_chunk_gpu_mean_ms) == sum(mask) + 1`
-
-**Interval-level cache**: `artifacts/chunk_cache/{model}/int_{start}_{end}/` stores the ONNX
-and TRT engine for each merged base-chunk interval independently of the mask variant name.
-When two different masks share a chunk with the same `source_chunk_ids = [start..end]`, the
-second mask reuses the cached ONNX/engine rather than rebuilding it.
-- ONNX export is done per-chunk inline (calls `export_module()` directly, not subprocess).
-- Engine build is done **per-chunk** via `build_single_engine()` (trtexec). If an engine is
-  already in interval cache, it is copied directly; otherwise trtexec is invoked for that
-  chunk only, then the result is stored in interval cache.
-- `timing.json` inside each interval directory records `export_wall_s` and
-  `build_{precision}_wall_s` for cold-cache design-time estimation.
-- Interval cache is additive: deleting `artifacts/chunk_cache/` does not break correctness.
-
-**Cold-cache design-time estimate**: `EvaluationResult.estimated_cold_total_s` sums the
-per-interval export and build times for all chunks in the mask plus `profile_wall_s`. This
-lets Fig.5 report the design-time cost that would have been paid on a cold interval cache,
-even when the actual run benefited from caching.
-
-## Task Model Lifecycle
-
-```
-DNNBackedTask
-  ├─ base_chunk_times_ms  [N floats]   ← from dag_aligned_full.json
-  ├─ initial_mask         [N-1 ints]   ← 0 = no split (initial state)
-  └─ candidate_count      N
-
-dnn_task_to_seginftask(dt, splitting_config)
-  ↓
-SegInfTask
-  ├─ C_list       [cpu_pre_ms, cpu_post_ms]
-  ├─ inference_segment_list[0].base_block_list  [N floats]
-  └─ G = sum(base_chunk_times_ms)   (0 if no live profiling)
-
-evaluate_and_apply_mask(dt, st, mask, chunk_idx, ...)
-  └─ _patch_seg_task(task, chunk_times)
-       ├─ seg.G_block_list = list(chunk_times)
-       └─ task.G_segment_list[0] = list(chunk_times)
-```
-
-## SS ↔ UNI Conversion
-
-`convert_SS_to_UNI()` merges all C and G blocks into a single UNI segment, tracking
-`_UNI_block_sources` metadata for back-conversion. Blocks with value ≤ 0 are skipped.
-
-`convert_UNI_to_SS()` uses `_UNI_block_sources` to reconstruct original C_list and
-G_segment_list. `c_list` size is `max(original_segment_count+1, max_c_idx+1)` to handle
-the G=0 case (fresh clone / no live profiling) where G blocks are 0 and are skipped by
-`append_block`, leaving only C sources in `_UNI_block_sources`. Without this fix, the
-second C source (index 1) would IndexError into a single-element `c_list`.
+Source, configs, and baseline metadata are portable. Generated TensorRT
+engines and measured WCET are device/software-stack artifacts and must be
+regenerated when compatibility or experimental comparability is uncertain.

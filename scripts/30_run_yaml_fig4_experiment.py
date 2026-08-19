@@ -30,6 +30,7 @@ import importlib.util
 import json
 import math
 import os
+import statistics
 import sys
 import time
 from collections import defaultdict
@@ -240,6 +241,55 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     ap.add_argument(
+        "--k-split-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Reuse the global measured best-K cache. Disable with "
+            "--no-k-split-cache when measuring actual candidate-search time."
+        ),
+    )
+    ap.add_argument(
+        "--profile-first-seen-per-taskset",
+        action="store_true",
+        default=False,
+        help=(
+            "Use a fresh logical configuration cache for each taskset/algorithm "
+            "and actually profile every first-seen model/precision/mask while "
+            "still reusing ONNX and TensorRT engine artifacts."
+        ),
+    )
+    ap.add_argument(
+        "--virtual-profile-first-seen-per-taskset",
+        action="store_true",
+        default=False,
+        help=(
+            "Do not run the profiler. For each first-seen model/precision/mask, "
+            "estimate profiling time as sum(chunk wall_mean_ms) * "
+            "(warmup + iters), while using cached timing for the search."
+        ),
+    )
+    ap.add_argument(
+        "--cache-aware-profile-first-seen-per-taskset",
+        action="store_true",
+        default=False,
+        help=(
+            "For each taskset/algorithm, estimate first-seen cached configuration "
+            "profile/build cost from timing metadata, while allowing cache misses "
+            "to build/profile normally and populate the caches."
+        ),
+    )
+    ap.add_argument(
+        "--save-timing-events",
+        action="store_true",
+        default=False,
+        help=(
+            "Stream per-configuration timing events to timing_events.jsonl. "
+            "Disabled by default because OPT can generate tens of millions of events; "
+            "per-taskset aggregate timing CSVs are always retained."
+        ),
+    )
+    ap.add_argument(
         "--algorithm-set",
         default="main4",
         choices=list(_ALGORITHM_SETS.keys()),
@@ -273,7 +323,17 @@ def parse_args() -> argparse.Namespace:
         help="Abort before live build/profile if free disk space on REPO filesystem "
              "is below N GB.  Ignored in dry-run mode.",
     )
-    return ap.parse_args()
+    args = ap.parse_args()
+    timing_modes = sum(bool(value) for value in (
+        args.profile_first_seen_per_taskset,
+        args.virtual_profile_first_seen_per_taskset,
+        args.cache_aware_profile_first_seen_per_taskset,
+    ))
+    if timing_modes > 1:
+        ap.error(
+            "the first-seen-per-taskset profiling modes are mutually exclusive"
+        )
+    return args
 
 
 def _build_algorithm_list(args: argparse.Namespace) -> List[AlgorithmSpec]:
@@ -778,6 +838,67 @@ def aggregate(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Di
     return ratio_rows, split_rows
 
 
+TIMING_METRICS = [
+    "profiling_wall_s",
+    "estimated_optimize_wall_s",
+    "optimize_plus_profiling_wall_s",
+    "search_wall_s",
+    "search_compute_wall_s",
+    "estimated_search_wall_s",
+]
+
+
+def _percentile(values: List[float], p: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * p
+    lo = int(rank)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = rank - lo
+    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+
+
+def aggregate_timing(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Aggregate taskset-local timing by utilization and algorithm."""
+    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[(f"{float(row['utilization']):.2f}", row["algorithm_label"])].append(row)
+
+    summary: List[Dict[str, Any]] = []
+    for (util_key, label), items in sorted(grouped.items()):
+        out: Dict[str, Any] = {
+            "utilization": util_key,
+            "algorithm": label,
+            "tasksets": len(items),
+            "valid_config_count": sum(1 for r in items if r.get("valid_config_found")),
+            "profile_failure_count": sum(
+                int(r.get("profile_failure_count", 0) or 0) for r in items
+            ),
+            "missing_build_timing_count": sum(
+                int(r.get("missing_build_timing_count", 0) or 0) for r in items
+            ),
+            "missing_profile_timing_count": sum(
+                int(r.get("missing_profile_timing_count", 0) or 0) for r in items
+            ),
+            "mean_unique_configurations_profiled": avg(
+                items, "unique_configurations_profiled"
+            ),
+            "mean_unique_chunks_optimized": avg(items, "unique_chunks_optimized"),
+        }
+        for metric in TIMING_METRICS:
+            values = [float(r.get(metric, 0.0) or 0.0) for r in items]
+            out[f"mean_{metric}"] = statistics.mean(values) if values else 0.0
+            out[f"median_{metric}"] = statistics.median(values) if values else 0.0
+            out[f"p95_{metric}"] = _percentile(values, 0.95)
+            out[f"min_{metric}"] = min(values) if values else 0.0
+            out[f"max_{metric}"] = max(values) if values else 0.0
+        summary.append(out)
+    return summary
+
+
 def write_csv(path: Path, rows: List[Dict[str, Any]], fieldnames: Optional[List[str]] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if fieldnames is None:
@@ -937,6 +1058,10 @@ def write_summary(
 ) -> None:
     errors = [r for r in per_rows if r.get("error")]
     any_split = any(r.get("any_split_triggered") for r in per_rows)
+    ss_tolfb_disagreements = [
+        r for r in per_rows
+        if r.get("algorithm_label") == "SS-tol-fb" and r.get("final_checks_disagree")
+    ]
     algo_labels = ", ".join(
         label for _, _, label in (algorithm_list or _DEFAULT_ALGORITHMS)
     )
@@ -961,6 +1086,11 @@ def write_summary(
         f"- Ignore period_range: {mapping['ignore_period_range']}",
         f"- Max candidates: {args.max_candidates}",
         f"- Max profiles: {args.max_profiles}",
+        f"- Profile first-seen configuration per taskset/algorithm: "
+        f"{args.profile_first_seen_per_taskset}",
+        f"- Virtual first-seen profiling from cached wall mean: "
+        f"{args.virtual_profile_first_seen_per_taskset}",
+        f"- Measured best-K cache enabled: {args.k_split_cache}",
     ]
     if mapping.get("c_ratio_min") is not None:
         lines.append(f"- C-ratio range: [{mapping['c_ratio_min']}, {mapping['c_ratio_max']}]")
@@ -1031,11 +1161,17 @@ def write_summary(
         f"- Actual splitting observed: {'yes' if any_split else 'no'}",
         f"- Result rows with errors: {len(errors)}",
         f"- Policy violations: {sum(1 for r in per_rows if r.get('policy_violation'))}",
+        f"- SS-tol-fb final RTA/tolerance disagreements: {len(ss_tolfb_disagreements)}",
         "",
         "## Notes",
         "",
         "- Dry-run mode uses existing chunk timing metadata and does not build/profile new TensorRT engines.",
         "- Live mode is cache-first and uses the existing global live profile budget controls.",
+        "- `per_taskset_timing.csv` contains one timing row per taskset and algorithm.",
+        "- `timing_summary.csv` contains U/algorithm mean, median, p95, min, and max values.",
+        "- In virtual mode, `profiling_wall_s` is `(warmup + iters) * sum(wall_mean_ms)` per first-seen mask.",
+        "- `estimated_optimize_wall_s` sums historical TensorRT engine-build time once per unique chunk.",
+        "- `estimated_search_wall_s` adds virtual profiling cost to cache-based `search_compute_wall_s`.",
         "- `period_range` is not the task-generation driver in the default real-DNN mapping.",
         "- In dnn_gpu mode, CSV `utilization` values are target GPU utilizations.",
     ]
@@ -1047,6 +1183,24 @@ def write_summary(
                 f"- {row['algorithm_label']} on {row['taskset']}: "
                 f"{prefix}{row.get('error_message') or row.get('error')}"
             )
+    if ss_tolfb_disagreements:
+        lines += [
+            "",
+            "## SS-tol-fb Final Check Disagreements",
+            "",
+            format_table(
+                ss_tolfb_disagreements[:20],
+                [
+                    "utilization",
+                    "taskset",
+                    "schedulable",
+                    "final_rta_schedulable",
+                    "final_tolerance_schedulable",
+                    "final_tolerance_violation_count",
+                    "overload_reason",
+                ],
+            ),
+        ]
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n")
 
 
@@ -1141,7 +1295,10 @@ def main() -> int:
     yaml_data = parse_simple_yaml(config_path)
     mapping, mapping_notes = build_mapping(yaml_data, args)
     run_name = make_run_name(args, config_path)
-    out_dir = Path(args.output_dir) / run_name
+    output_root = Path(args.output_dir)
+    if not output_root.is_absolute():
+        output_root = REPO / output_root
+    out_dir = output_root / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     algorithm_list = _build_algorithm_list(args)
@@ -1190,6 +1347,13 @@ def main() -> int:
 
     per_rows: List[Dict[str, Any]] = []
     all_results: List[Dict[str, Any]] = []
+    timing_events_path = out_dir / "timing_events.jsonl"
+    timing_events_file = (
+        timing_events_path.open("w") if args.save_timing_events else None
+    )
+    if timing_events_file is None:
+        # Remove stale raw events immediately when reusing a run directory.
+        timing_events_path.write_text("")
     start = time.time()
     total_steps = len(tasksets) * len(algorithm_list)
     completed_steps = 0
@@ -1223,6 +1387,14 @@ def main() -> int:
                 force_profile=bool(args.force_profile),
                 verbose_evaluator=bool(args.verbose_evaluator),
                 enable_monotonic_k_split_cache=bool(args.monotonic_k_split_cache),
+                profile_first_seen_per_taskset=bool(args.profile_first_seen_per_taskset),
+                virtual_profile_first_seen_per_taskset=bool(
+                    args.virtual_profile_first_seen_per_taskset
+                ),
+                cache_aware_profile_first_seen_per_taskset=bool(
+                    args.cache_aware_profile_first_seen_per_taskset
+                ),
+                disable_k_split_cache=not bool(args.k_split_cache),
             )
             if args.verbose_evaluator:
                 result = run_dnn_rta_algorithm(**run_kwargs)
@@ -1271,12 +1443,32 @@ def main() -> int:
             row["k_split_unique_task_masks"] = int(
                 getattr(result.stats, "k_split_unique_task_masks", 0)
             )
+            timing = getattr(result, "timing", None)
+            if timing is not None:
+                row.update(timing.to_dict())
             per_rows.append(row)
             all_results.append({
                 **{k: v for k, v in row.items() if k != "task_details"},
                 "stats": result.stats.to_dict(),
+                "timing": timing.to_dict() if timing is not None else {},
                 "task_details": row["task_details"],
             })
+            if timing is not None:
+                if timing_events_file is not None:
+                    identity = {
+                        "utilization": row.get("utilization"),
+                        "taskset": row.get("taskset"),
+                        "algorithm": row.get("algorithm_label"),
+                        "algorithm_impl": row.get("algorithm_impl"),
+                    }
+                    for event in timing.events:
+                        timing_events_file.write(
+                            json.dumps({**identity, **event}, sort_keys=True) + "\n"
+                        )
+                    timing_events_file.flush()
+                # Aggregate timing has already been copied into row/all_results.
+                # Raw events must not survive across taskset/algorithm runs.
+                timing.events.clear()
             sched = "SCHED" if result.schedulable else "MISS"
             split = "split" if row["any_split_triggered"] else "no-split"
             error = " ERROR" if result.error else ""
@@ -1310,11 +1502,15 @@ def main() -> int:
     print()
 
     ratio_rows, split_rows = aggregate(per_rows)
+    timing_summary_rows = aggregate_timing(per_rows)
 
     per_fields = [
         "utilization", "utilization_kind", "taskset", "taskset_path", "algorithm", "algorithm_label",
         "algorithm_impl", "rta_model", "schedulable", "analysis_error", "error_type",
-        "error_message", "overload_reason", "duration_s", "optimization_runtime_s",
+        "error_message", "overload_reason", "diagnostic_message",
+        "final_rta_schedulable", "final_tolerance_schedulable",
+        "final_checks_disagree", "final_tolerance_violation_count",
+        "duration_s", "optimization_runtime_s",
         "masks_evaluated", "dry_run_evaluations", "real_profiles", "cache_hits",
         "skipped_cache_misses", "unique_masks_evaluated", "unique_mask_cache_hits",
         "unique_skipped_masks", "interval_timing_cache_hits",
@@ -1331,6 +1527,16 @@ def main() -> int:
         "k_split_unique_model_chunks", "k_split_unique_model_masks",
         "k_split_unique_task_chunks", "k_split_unique_task_masks",
         "early_stop_optimistic_checks", "early_stop_optimistic_deadline_misses",
+        "profiling_wall_s", "estimated_optimize_wall_s",
+        "optimize_plus_profiling_wall_s", "search_wall_s", "search_compute_wall_s",
+        "estimated_search_wall_s", "virtual_profiling_wall_s",
+        "profiling_time_source", "virtual_profile_iterations",
+        "time_to_valid_config_s", "valid_config_found",
+        "unique_configurations_encountered", "unique_configurations_profiled",
+        "unique_chunks_optimized", "missing_build_timing_count",
+        "missing_profile_timing_count", "profile_failure_count",
+        "actual_export_wall_s", "actual_build_wall_s",
+        "actual_pipeline_wall_s",
         "gpu_util", "cpu_util", "total_util",
         "max_cpu_partition_util", "actual_g_ratio_min", "actual_g_ratio_max",
         "actual_g_ratio_avg", "actual_c_ratio_min", "actual_c_ratio_max",
@@ -1379,10 +1585,41 @@ def main() -> int:
         "avg_early_stop_optimistic_deadline_misses",
     ]
 
+    timing_fields = [
+        "utilization", "taskset", "taskset_path", "algorithm", "algorithm_label",
+        "algorithm_impl", "schedulable", "analysis_error", "valid_config_found",
+        "profiling_wall_s", "estimated_optimize_wall_s",
+        "optimize_plus_profiling_wall_s", "search_wall_s", "search_compute_wall_s",
+        "estimated_search_wall_s", "virtual_profiling_wall_s",
+        "profiling_time_source", "virtual_profile_iterations",
+        "time_to_valid_config_s", "unique_configurations_encountered",
+        "unique_configurations_profiled", "unique_chunks_optimized",
+        "missing_build_timing_count", "missing_profile_timing_count",
+        "profile_failure_count",
+        "actual_export_wall_s", "actual_build_wall_s", "actual_pipeline_wall_s",
+        "early_stop_optimistic_checks", "early_stop_optimistic_deadline_misses",
+        "k_split_calls", "k_split_candidate_masks", "error_type", "error_message",
+    ]
+    timing_summary_fields = [
+        "utilization", "algorithm", "tasksets", "valid_config_count",
+        "profile_failure_count", "missing_build_timing_count",
+        "missing_profile_timing_count",
+        "mean_unique_configurations_profiled", "mean_unique_chunks_optimized",
+    ]
+    for metric in TIMING_METRICS:
+        timing_summary_fields.extend([
+            f"mean_{metric}", f"median_{metric}", f"p95_{metric}",
+            f"min_{metric}", f"max_{metric}",
+        ])
+
     write_csv(out_dir / "per_taskset_results.csv", per_rows, per_fields)
+    write_csv(out_dir / "per_taskset_timing.csv", per_rows, timing_fields)
+    write_csv(out_dir / "timing_summary.csv", timing_summary_rows, timing_summary_fields)
     write_csv(out_dir / "schedulability_ratio.csv", ratio_rows, ratio_fields)
     write_csv(out_dir / "split_activity.csv", split_rows, split_fields)
     (out_dir / "all_results.json").write_text(json.dumps(all_results, indent=2))
+    if timing_events_file is not None:
+        timing_events_file.close()
     write_summary(
         out_dir, args, config_path, mapping, tasksets, ratio_rows, split_rows,
         per_rows, live_budget, algorithm_list,
@@ -1390,6 +1627,8 @@ def main() -> int:
 
     elapsed = time.time() - start
     print(f"\nSaved: {_display_path(out_dir / 'schedulability_ratio.csv')}")
+    print(f"Saved: {_display_path(out_dir / 'per_taskset_timing.csv')}")
+    print(f"Saved: {_display_path(out_dir / 'timing_summary.csv')}")
     print(f"Saved: {_display_path(out_dir / 'yaml_mapping_report.md')}")
     print(f"Saved: {_display_path(out_dir / 'summary.md')}")
     print(f"Elapsed algorithm time: {elapsed:.2f}s")

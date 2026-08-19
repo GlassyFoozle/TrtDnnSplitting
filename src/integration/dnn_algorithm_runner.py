@@ -97,6 +97,7 @@ from src.integration.mask_applicator import (
 )
 from src.integration.dnn_taskset_generator import generate_dnn_taskset
 from src.integration.dnnsplitting_adapter import build_task_set_dict, get_dnnsplitting_dir
+from src.integration.taskset_timing import TasksetTimingRecorder
 
 from src.rta.analysis import (
     sort_task_set, get_SS_R, get_SS_tolerance,
@@ -565,9 +566,14 @@ class DNNAlgorithmResult:
 
     task_results: List[TaskResult] = field(default_factory=list)
     stats: ProfilingStats = field(default_factory=ProfilingStats)
+    timing: TasksetTimingRecorder = field(default_factory=TasksetTimingRecorder)
 
     duration_s: float = 0.0
     algorithm_iterations: int = 0
+    final_rta_schedulable: Optional[bool] = None
+    final_tolerance_schedulable: Optional[bool] = None
+    final_checks_disagree: Optional[bool] = None
+    final_tolerance_violation_count: int = 0
     single_schedulable: Optional[bool] = None
     early_stopped_no_split: bool = False
 
@@ -681,6 +687,10 @@ def run_dnn_rta_algorithm(
     per_splitting_overhead: float = 0.0,
     verbose_evaluator: bool = False,
     enable_monotonic_k_split_cache: bool = False,
+    profile_first_seen_per_taskset: bool = False,
+    virtual_profile_first_seen_per_taskset: bool = False,
+    cache_aware_profile_first_seen_per_taskset: bool = False,
+    disable_k_split_cache: bool = False,
 ) -> DNNAlgorithmResult:
     """
     Run a DNN-aware splitting algorithm on a taskset JSON.
@@ -688,7 +698,7 @@ def run_dnn_rta_algorithm(
     Returns a DNNAlgorithmResult with schedulability verdict, per-task details,
     and profiling statistics.
     """
-    t0 = time.time()
+    t0 = time.perf_counter()
 
     result = DNNAlgorithmResult(
         rta_model=model.upper(),
@@ -700,6 +710,15 @@ def run_dnn_rta_algorithm(
         policy_name=policy_name,
         schedulable=False,
         error=None,
+        timing=TasksetTimingRecorder(
+            enabled=(
+                profile_first_seen_per_taskset
+                or virtual_profile_first_seen_per_taskset
+                or cache_aware_profile_first_seen_per_taskset
+            ),
+            virtual_profile=virtual_profile_first_seen_per_taskset,
+            cache_aware_profile=cache_aware_profile_first_seen_per_taskset,
+        ),
     )
     # Shared kwargs for all evaluate_and_apply_mask calls
     eval_kwargs = dict(
@@ -713,6 +732,8 @@ def run_dnn_rta_algorithm(
         live_budget=live_budget,
         verbose_evaluator=verbose_evaluator,
         enable_monotonic_k_split_cache=enable_monotonic_k_split_cache,
+        timing_recorder=result.timing,
+        use_k_split_cache=not disable_k_split_cache,
     )
 
     # Load DNN tasks + build initial SegInfTask task_set
@@ -737,6 +758,7 @@ def run_dnn_rta_algorithm(
                 task_map[str(dt.task_name)] = (dt, st)
                 break
 
+    search_t0 = time.perf_counter()
     try:
         if model.lower() == "ss":
             _dispatch_ss(
@@ -783,7 +805,12 @@ def run_dnn_rta_algorithm(
             result.analysis_error = True
             result.schedulable = False
 
-    result.duration_s = time.time() - t0
+    search_wall_s = time.perf_counter() - search_t0
+    result.timing.finalize_search(
+        search_wall_s,
+        valid_config_found=bool(result.schedulable and not result.analysis_error),
+    )
+    result.duration_s = time.perf_counter() - t0
     return result
 
 
@@ -1390,14 +1417,59 @@ def _run_ss_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iteratio
     result.algorithm_iterations = profiling_count
 
     final_R_list = []
+    final_tolerance_list = []
+    final_rta_schedulable = True
     for i, st in enumerate(sorted_task_list):
         R_i, B_i_high, B_i_low, I_i = get_SS_R(sorted_task_list, i, final_R_list)
         final_R_list.append(R_i)
         if R_i > st.D:
+            final_rta_schedulable = False
             is_schedulable = False
+        if i == len(sorted_task_list) - 1:
+            final_tolerance_list.append(math.inf)
+        else:
+            final_tolerance_list.append(
+                get_SS_tolerance(st, st.D, st.C, st.G, I_i, B_i_high)
+            )
         result.task_results.append(_make_task_result(
             st, R_i, B_i_high, B_i_low, I_i, task_map
         ))
+
+    tolerance_violations = []
+    tolerance_eps = 1e-9
+    for i, tolerance_i in enumerate(final_tolerance_list[:-1]):
+        if math.isinf(tolerance_i):
+            continue
+        for j in range(i + 1, len(sorted_task_list)):
+            lower_block = sorted_task_list[j].max_G_block
+            if lower_block > tolerance_i + tolerance_eps:
+                tolerance_violations.append((i, j, tolerance_i, lower_block))
+                break
+
+    final_tolerance_schedulable = not tolerance_violations
+    if tolerance_violations:
+        is_schedulable = False
+        first_i, first_j, first_tol, first_block = tolerance_violations[0]
+        result.unschedulable_reason = (
+            "SS-tol-fb tolerance violation: "
+            f"task {sorted_task_list[first_i].id} tolerance={first_tol:.6f} ms, "
+            f"lower task {sorted_task_list[first_j].id} max_G_block={first_block:.6f} ms"
+        )
+
+    result.final_rta_schedulable = final_rta_schedulable
+    result.final_tolerance_schedulable = final_tolerance_schedulable
+    result.final_checks_disagree = final_rta_schedulable != final_tolerance_schedulable
+    result.final_tolerance_violation_count = len(tolerance_violations)
+    if result.final_checks_disagree:
+        message = (
+            "final_rta_schedulable="
+            f"{final_rta_schedulable}, final_tolerance_schedulable="
+            f"{final_tolerance_schedulable}"
+        )
+        result.diagnostic_message = (
+            f"{result.diagnostic_message}; {message}"
+            if result.diagnostic_message else message
+        )
 
     result.schedulable = is_schedulable
 
@@ -2137,16 +2209,16 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
         '''
         # Step 4: Early stop
         '''
-        optimistic_R_list = get_optimistic_UNI_R(uni_tasks)
-        for k in range(len(optimistic_R_list)):
-            task_k = uni_tasks[k]
-            D_k = task_k.D
-            R_k = optimistic_R_list[k]
-            if D_k < R_k:
-                is_schedulable = False
-                result.schedulable = is_schedulable
-                result.algorithm_iterations = profiling_count
-                return
+        # optimistic_R_list = get_optimistic_UNI_R(uni_tasks)
+        # for k in range(len(optimistic_R_list)):
+        #     task_k = uni_tasks[k]
+        #     D_k = task_k.D
+        #     R_k = optimistic_R_list[k]
+        #     if D_k < R_k:
+        #         is_schedulable = False
+        #         result.schedulable = is_schedulable
+        #         result.algorithm_iterations = profiling_count
+        #         return
 
         # Detect not schedulable
         if not is_schedulable:
@@ -2162,13 +2234,57 @@ def _run_uni_tol_fb(sorted_task_list, task_map, result, eval_kwargs, max_iterati
     # tolerance loop can certify lower-priority blocking bounds while an already
     # visited lower task still misses its own response-time deadline under the
     # measured split timings.
+    final_tolerance_list = []
+    final_rta_schedulable = True
     for i, ut in enumerate(uni_tasks):
         R_i, K_i = get_UNI_R_and_K(uni_tasks, i)
         if R_i > ut.D:
+            final_rta_schedulable = False
             is_schedulable = False
+        if i == len(uni_tasks) - 1:
+            final_tolerance_list.append(math.inf)
+        else:
+            final_tolerance_list.append(get_UNI_tolerance(uni_tasks, i, K_i))
         result.task_results.append(_make_task_result_from_uni(
             ut, sorted_task_list[i], R_i, task_map
         ))
+
+    ss_task_view = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
+    tolerance_violations = []
+    tolerance_eps = 1e-9
+    for i, tolerance_i in enumerate(final_tolerance_list[:-1]):
+        if math.isinf(tolerance_i):
+            continue
+        for j in range(i + 1, len(ss_task_view)):
+            lower_block = ss_task_view[j].max_G_block
+            if lower_block > tolerance_i + tolerance_eps:
+                tolerance_violations.append((i, j, tolerance_i, lower_block))
+                break
+
+    final_tolerance_schedulable = not tolerance_violations
+    if tolerance_violations:
+        is_schedulable = False
+        first_i, first_j, first_tol, first_block = tolerance_violations[0]
+        result.unschedulable_reason = (
+            "UNI-tol-fb tolerance violation: "
+            f"task {sorted_task_list[first_i].id} tolerance={first_tol:.6f} ms, "
+            f"lower task {sorted_task_list[first_j].id} max_G_block={first_block:.6f} ms"
+        )
+
+    result.final_rta_schedulable = final_rta_schedulable
+    result.final_tolerance_schedulable = final_tolerance_schedulable
+    result.final_checks_disagree = final_rta_schedulable != final_tolerance_schedulable
+    result.final_tolerance_violation_count = len(tolerance_violations)
+    if result.final_checks_disagree:
+        message = (
+            "final_rta_schedulable="
+            f"{final_rta_schedulable}, final_tolerance_schedulable="
+            f"{final_tolerance_schedulable}"
+        )
+        result.diagnostic_message = (
+            f"{result.diagnostic_message}; {message}"
+            if result.diagnostic_message else message
+        )
 
     result.schedulable = is_schedulable
     result.algorithm_iterations = profiling_count
@@ -2351,20 +2467,49 @@ def _run_uni_heu_paper(sorted_task_list, task_map, result, eval_kwargs,
         tol_i = get_UNI_tolerance(uni_tasks, i, K_i)
         tolerance_list.append(tol_i)
 
-    # Final RTA pass
+    # Final RTA pass + final tolerance consistency check
+    final_tolerance_list = []
+    final_rta_schedulable = True
     for i, ut in enumerate(uni_tasks):
         R_i, K_i = get_UNI_R_and_K(uni_tasks, i)
         if R_i > ut.D:
+            final_rta_schedulable = False
             schedulable = False
-            result.task_results.append(_make_task_result_from_uni(
-                ut, sorted_task_list[i], R_i, task_map
-            ))
-            result.schedulable = schedulable
-            result.algorithm_iterations = iterations
-            return
+        if i == len(uni_tasks) - 1:
+            final_tolerance_list.append(math.inf)
+        else:
+            final_tolerance_list.append(get_UNI_tolerance(uni_tasks, i, K_i))
         result.task_results.append(_make_task_result_from_uni(
             ut, sorted_task_list[i], R_i, task_map
         ))
+
+    tolerance_violations = _collect_uni_final_tolerance_violations(
+        uni_tasks, final_tolerance_list
+    )
+    final_tolerance_schedulable = not tolerance_violations
+    if tolerance_violations:
+        schedulable = False
+        first_i, first_j, first_tol, first_block = tolerance_violations[0]
+        result.unschedulable_reason = (
+            "UNI-heu tolerance violation: "
+            f"task {sorted_task_list[first_i].id} tolerance={first_tol:.6f} ms, "
+            f"lower task {sorted_task_list[first_j].id} max_G_block={first_block:.6f} ms"
+        )
+
+    result.final_rta_schedulable = final_rta_schedulable
+    result.final_tolerance_schedulable = final_tolerance_schedulable
+    result.final_checks_disagree = final_rta_schedulable != final_tolerance_schedulable
+    result.final_tolerance_violation_count = len(tolerance_violations)
+    if result.final_checks_disagree:
+        message = (
+            "final_rta_schedulable="
+            f"{final_rta_schedulable}, final_tolerance_schedulable="
+            f"{final_tolerance_schedulable}"
+        )
+        result.diagnostic_message = (
+            f"{result.diagnostic_message}; {message}"
+            if result.diagnostic_message else message
+        )
 
     result.schedulable = schedulable
     result.algorithm_iterations = iterations
@@ -2443,23 +2588,67 @@ def _run_uni_opt_paper(sorted_task_list, task_map, result, eval_kwargs,
         tol_i = get_UNI_tolerance(uni_tasks, i, K_i)
         tolerance_list.append(tol_i)
 
-    # Final RTA pass
+    # Final RTA pass + final tolerance consistency check
+    final_tolerance_list = []
+    final_rta_schedulable = True
     for i, ut in enumerate(uni_tasks):
         R_i, K_i = get_UNI_R_and_K(uni_tasks, i)
         if R_i > ut.D:
+            final_rta_schedulable = False
             schedulable = False
-            result.task_results.append(_make_task_result_from_uni(
-                ut, sorted_task_list[i], R_i, task_map
-            ))
-            result.schedulable = schedulable
-            result.algorithm_iterations = iterations
-            return
+        if i == len(uni_tasks) - 1:
+            final_tolerance_list.append(math.inf)
+        else:
+            final_tolerance_list.append(get_UNI_tolerance(uni_tasks, i, K_i))
         result.task_results.append(_make_task_result_from_uni(
             ut, sorted_task_list[i], R_i, task_map
         ))
 
+    tolerance_violations = _collect_uni_final_tolerance_violations(
+        uni_tasks, final_tolerance_list
+    )
+    final_tolerance_schedulable = not tolerance_violations
+    if tolerance_violations:
+        schedulable = False
+        first_i, first_j, first_tol, first_block = tolerance_violations[0]
+        result.unschedulable_reason = (
+            "UNI-opt tolerance violation: "
+            f"task {sorted_task_list[first_i].id} tolerance={first_tol:.6f} ms, "
+            f"lower task {sorted_task_list[first_j].id} max_G_block={first_block:.6f} ms"
+        )
+
+    result.final_rta_schedulable = final_rta_schedulable
+    result.final_tolerance_schedulable = final_tolerance_schedulable
+    result.final_checks_disagree = final_rta_schedulable != final_tolerance_schedulable
+    result.final_tolerance_violation_count = len(tolerance_violations)
+    if result.final_checks_disagree:
+        message = (
+            "final_rta_schedulable="
+            f"{final_rta_schedulable}, final_tolerance_schedulable="
+            f"{final_tolerance_schedulable}"
+        )
+        result.diagnostic_message = (
+            f"{result.diagnostic_message}; {message}"
+            if result.diagnostic_message else message
+        )
+
     result.schedulable = schedulable
     result.algorithm_iterations = iterations
+
+
+def _collect_uni_final_tolerance_violations(uni_tasks, final_tolerance_list):
+    ss_task_view = convert_task_list_to_SS([deepcopy(t) for t in uni_tasks])
+    tolerance_violations = []
+    tolerance_eps = 1e-9
+    for i, tolerance_i in enumerate(final_tolerance_list[:-1]):
+        if math.isinf(tolerance_i):
+            continue
+        for j in range(i + 1, len(ss_task_view)):
+            lower_block = ss_task_view[j].max_G_block
+            if lower_block > tolerance_i + tolerance_eps:
+                tolerance_violations.append((i, j, tolerance_i, lower_block))
+                break
+    return tolerance_violations
 
 
 def _sync_uni_from_search(uni_task_new, ut_with_block_list) -> None:

@@ -709,21 +709,32 @@ def _generate_dnnsplitting_taskset(
                     if config.utilization_basis == "gpu"
                     else "target_total_utilization"
                 )
+                stored_utilization = round(u_i, 8)
+                stored_gpu_wcet_ms = round(G_i, 6)
+                stored_period_ms = round(T_i, 6)
+                if config.utilization_basis == "gpu":
+                    # Keep the serialized task internally consistent.  Using
+                    # the unrounded values for T while rounding G and U can
+                    # otherwise make G/U disagree with T on a clean checkout.
+                    stored_period_ms = round(
+                        stored_gpu_wcet_ms / stored_utilization,
+                        6,
+                    )
                 tasks.append({
                     "task_name": f"tau{task_idx}_{model}",
                     "model_name": model,
                     "precision": config.precision,
-                    "period_ms": round(T_i, 6),
-                    "deadline_ms": round(T_i, 6),
+                    "period_ms": stored_period_ms,
+                    "deadline_ms": stored_period_ms,
                     "priority": 0,
                     "cpu_id": cpu_id,
                     "cpu_pre_ms": round(cpu_pre, 6),
                     "cpu_post_ms": round(cpu_post, 6),
                     "target_chunks": 1,
                     "wcet_metric": config.wcet_metric,
-                    "target_utilization": round(u_i, 8),
-                    target_field: round(u_i, 8),
-                    "real_gpu_wcet_ms": round(G_i, 6),
+                    "target_utilization": stored_utilization,
+                    target_field: stored_utilization,
+                    "real_gpu_wcet_ms": stored_gpu_wcet_ms,
                     "sampled_g_ratio": round(sampled_g_ratio, 6),
                     "actual_g_ratio": round(actual_g_ratio, 6),
                     "sampled_c_ratio": round(actual_c_ratio, 6),

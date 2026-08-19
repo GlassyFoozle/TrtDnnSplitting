@@ -447,6 +447,12 @@ def summarize_result(
         "analysis_error": bool(getattr(result, "analysis_error", False) or result.error),
         "overload_reason": getattr(result, "unschedulable_reason", None) or "",
         "diagnostic_message": getattr(result, "diagnostic_message", None) or "",
+        "final_rta_schedulable": getattr(result, "final_rta_schedulable", None),
+        "final_tolerance_schedulable": getattr(result, "final_tolerance_schedulable", None),
+        "final_checks_disagree": getattr(result, "final_checks_disagree", None),
+        "final_tolerance_violation_count": int(
+            getattr(result, "final_tolerance_violation_count", 0) or 0
+        ),
         "duration_s": float(result.duration_s),
         "optimization_runtime_s": float(result.duration_s),
         "algorithm_iterations": int(result.algorithm_iterations),
@@ -720,6 +726,10 @@ def write_summary(
 ) -> None:
     any_split = any(r["any_split_triggered"] for r in per_rows)
     errors = [r for r in per_rows if r.get("error")]
+    ss_tolfb_disagreements = [
+        r for r in per_rows
+        if r.get("algorithm_label") == "SS-tol-fb" and r.get("final_checks_disagree")
+    ]
     generated_by_util: Dict[str, int] = defaultdict(int)
     for util, _ in tasksets:
         util_key = "unknown" if util is None else f"{float(util):.2f}"
@@ -833,6 +843,7 @@ def write_summary(
         "",
         f"- Actual splitting observed: {'yes' if any_split else 'no'}",
         f"- Result rows with errors: {len(errors)}",
+        f"- SS-tol-fb final RTA/tolerance disagreements: {len(ss_tolfb_disagreements)}",
         "",
         "## Warnings and limitations",
         "",
@@ -853,6 +864,24 @@ def write_summary(
                 f"- {row['algorithm_label']} on {row['taskset']}: "
                 f"{err_prefix}{row.get('error_message') or row.get('error')}"
             )
+    if ss_tolfb_disagreements:
+        lines.extend([
+            "",
+            "## SS-tol-fb Final Check Disagreements",
+            "",
+            format_table(
+                ss_tolfb_disagreements[:20],
+                [
+                    "utilization",
+                    "taskset",
+                    "schedulable",
+                    "final_rta_schedulable",
+                    "final_tolerance_schedulable",
+                    "final_tolerance_violation_count",
+                    "overload_reason",
+                ],
+            ),
+        ])
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n")
 
 
