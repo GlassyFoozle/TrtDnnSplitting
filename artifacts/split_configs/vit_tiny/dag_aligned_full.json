@@ -1,0 +1,566 @@
+{
+  "model": "vit_tiny",
+  "variant": "dag_aligned_full",
+  "n_chunks": 14,
+  "input_shape": [
+    1,
+    3,
+    224,
+    224
+  ],
+  "dag_summary": {
+    "full_fx": {
+      "n_nodes": 16,
+      "n_edges": 15,
+      "n_skip_edges": 0,
+      "sync_counts": {
+        "e2e": 1,
+        "critical": 15,
+        "wo_skip": 15,
+        "max": 16
+      },
+      "critical_indices": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ]
+    }
+  },
+  "dag_aligned_summary": {
+    "candidate_count": 14,
+    "boundary_count": 13,
+    "materialized_count": 14,
+    "notes": "Generated from src.splitting.dag_aligned_split. ViT models use architecture-defined encoder-block chunks."
+  },
+  "chunks": [
+    {
+      "id": 0,
+      "name": "chunk0",
+      "chunk_name": "patch_class_pos",
+      "description": "conv_proj+class_token+pos_embedding",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "conv_proj",
+      "source_module_target": "conv_proj",
+      "op_type": "ViTPatchClassPos",
+      "covered_fx_nodes": [
+        "conv_proj",
+        "class_token",
+        "encoder_pos_embedding",
+        "encoder_dropout"
+      ],
+      "covered_module_targets": [
+        "conv_proj",
+        "class_token",
+        "encoder.pos_embedding",
+        "encoder.dropout"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT tokenization boundary before transformer encoder blocks",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "1",
+      "notes": "Includes patch projection, class token prepend, positional embedding add, and eval-mode dropout.",
+      "input_shape": [
+        1,
+        3,
+        224,
+        224
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk0.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk0_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk0_fp16.engine"
+    },
+    {
+      "id": 1,
+      "name": "chunk1",
+      "chunk_name": "encoder_layer_0",
+      "description": "encoder.layers.encoder_layer_0/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_0",
+      "source_module_target": "encoder.layers.encoder_layer_0",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_0"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_0"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "2",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk1.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk1_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk1_fp16.engine"
+    },
+    {
+      "id": 2,
+      "name": "chunk2",
+      "chunk_name": "encoder_layer_1",
+      "description": "encoder.layers.encoder_layer_1/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_1",
+      "source_module_target": "encoder.layers.encoder_layer_1",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_1"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_1"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "3",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk2.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk2_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk2_fp16.engine"
+    },
+    {
+      "id": 3,
+      "name": "chunk3",
+      "chunk_name": "encoder_layer_2",
+      "description": "encoder.layers.encoder_layer_2/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_2",
+      "source_module_target": "encoder.layers.encoder_layer_2",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_2"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_2"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "4",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk3.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk3_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk3_fp16.engine"
+    },
+    {
+      "id": 4,
+      "name": "chunk4",
+      "chunk_name": "encoder_layer_3",
+      "description": "encoder.layers.encoder_layer_3/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_3",
+      "source_module_target": "encoder.layers.encoder_layer_3",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_3"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_3"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "5",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk4.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk4_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk4_fp16.engine"
+    },
+    {
+      "id": 5,
+      "name": "chunk5",
+      "chunk_name": "encoder_layer_4",
+      "description": "encoder.layers.encoder_layer_4/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_4",
+      "source_module_target": "encoder.layers.encoder_layer_4",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_4"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_4"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "6",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk5.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk5_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk5_fp16.engine"
+    },
+    {
+      "id": 6,
+      "name": "chunk6",
+      "chunk_name": "encoder_layer_5",
+      "description": "encoder.layers.encoder_layer_5/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_5",
+      "source_module_target": "encoder.layers.encoder_layer_5",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_5"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_5"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "7",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk6.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk6_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk6_fp16.engine"
+    },
+    {
+      "id": 7,
+      "name": "chunk7",
+      "chunk_name": "encoder_layer_6",
+      "description": "encoder.layers.encoder_layer_6/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_6",
+      "source_module_target": "encoder.layers.encoder_layer_6",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_6"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_6"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "8",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk7.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk7_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk7_fp16.engine"
+    },
+    {
+      "id": 8,
+      "name": "chunk8",
+      "chunk_name": "encoder_layer_7",
+      "description": "encoder.layers.encoder_layer_7/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_7",
+      "source_module_target": "encoder.layers.encoder_layer_7",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_7"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_7"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "9",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk8.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk8_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk8_fp16.engine"
+    },
+    {
+      "id": 9,
+      "name": "chunk9",
+      "chunk_name": "encoder_layer_8",
+      "description": "encoder.layers.encoder_layer_8/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_8",
+      "source_module_target": "encoder.layers.encoder_layer_8",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_8"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_8"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "10",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk9.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk9_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk9_fp16.engine"
+    },
+    {
+      "id": 10,
+      "name": "chunk10",
+      "chunk_name": "encoder_layer_9",
+      "description": "encoder.layers.encoder_layer_9/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_9",
+      "source_module_target": "encoder.layers.encoder_layer_9",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_9"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_9"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "11",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk10.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk10_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk10_fp16.engine"
+    },
+    {
+      "id": 11,
+      "name": "chunk11",
+      "chunk_name": "encoder_layer_10",
+      "description": "encoder.layers.encoder_layer_10/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_10",
+      "source_module_target": "encoder.layers.encoder_layer_10",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_10"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_10"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "12",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk11.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk11_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk11_fp16.engine"
+    },
+    {
+      "id": 12,
+      "name": "chunk12",
+      "chunk_name": "encoder_layer_11",
+      "description": "encoder.layers.encoder_layer_11/EncoderBlock",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_layer_11",
+      "source_module_target": "encoder.layers.encoder_layer_11",
+      "op_type": "EncoderBlock",
+      "covered_fx_nodes": [
+        "encoder_layer_11"
+      ],
+      "covered_module_targets": [
+        "encoder.layers.encoder_layer_11"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT transformer encoder block boundary; block internals remain grouped",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "13",
+      "notes": "Contains layer norm, multi-head self-attention, residual add, MLP, and residual add.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        197,
+        192
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk12.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk12_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk12_fp16.engine"
+    },
+    {
+      "id": 13,
+      "name": "chunk13",
+      "chunk_name": "final_norm_head",
+      "description": "encoder.ln+class_token_select+heads",
+      "source_graph": "full_fx_dag",
+      "source_fx_node_name": "encoder_ln",
+      "source_module_target": "encoder.ln",
+      "op_type": "ViTFinalNormHead",
+      "covered_fx_nodes": [
+        "encoder_ln",
+        "getitem_class_token",
+        "heads"
+      ],
+      "covered_module_targets": [
+        "encoder.ln",
+        "heads"
+      ],
+      "is_full_dag_critical_candidate": true,
+      "materialization_status": "materialized",
+      "boundary_reason": "ViT classifier boundary after the final transformer encoder block",
+      "starts_at_critical_candidate": true,
+      "ends_at_critical_candidate": true,
+      "dag_indices": "14",
+      "notes": "Applies final norm, selects class token, and runs the classifier head.",
+      "input_shape": [
+        1,
+        197,
+        192
+      ],
+      "output_shape": [
+        1,
+        1000
+      ],
+      "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/chunk13.onnx",
+      "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/chunk13_fp32.engine",
+      "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/chunk13_fp16.engine"
+    }
+  ],
+  "full_model": {
+    "onnx": "artifacts/onnx/vit_tiny/dag_aligned_full/full.onnx",
+    "engine_fp32": "artifacts/engines/vit_tiny/dag_aligned_full/full_fp32.engine",
+    "engine_fp16": "artifacts/engines/vit_tiny/dag_aligned_full/full_fp16.engine"
+  }
+}

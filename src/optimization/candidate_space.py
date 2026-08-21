@@ -239,8 +239,9 @@ def load_candidate_space(
         timing_is_placeholder = True
 
     # Priority 5: opt-in equal-weight fallback for development/CI without hardware.
-    # These reference values match measured K=1 max totals on Jetson AGX Orin (FP32).
-    # They must be kept in sync with _DRY_RUN_BASE_WCET_MS in dnn_workload_generator.py.
+    # Legacy entries are K=1 references; newly added architectures may use an
+    # explicit development placeholder until a live device profiles them.
+    # Keep this map in sync with _DRY_RUN_BASE_WCET_MS in dnn_workload_generator.py.
     if all(t == 0.0 for t in per_chunk_means):
         if allow_equal_wcet_fallback:
             _DRY_RUN_WCET_MS = {
@@ -251,7 +252,10 @@ def load_candidate_space(
                 "vit": 8.50,
                 "vit_b_16": 8.50,
                 "vit_l_16": 25.43,
+                # Development-only dry-run placeholders; live runs profile K=1.
+                "vit_tiny": 2.00,
                 "vgg19": 7.562,
+                "yolo11s": 5.00,
             }
             wcet = _DRY_RUN_WCET_MS.get(model_name.lower())
             if wcet is not None:

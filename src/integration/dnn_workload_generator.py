@@ -61,7 +61,9 @@ _MODEL_N_CHUNKS: Dict[str, int] = {
     "vit": 14,
     "vit_b_16": 14,
     "vit_l_16": 26,
+    "vit_tiny": 14,
     "vgg19":    46,
+    "yolo11s":  24,
 }
 
 # Measured FP32 K=1 WCET references on Jetson AGX Orin (max/p99-era fallback, ms).
@@ -74,7 +76,10 @@ _DRY_RUN_BASE_WCET_MS: Dict[str, float] = {
     "vit": 8.50,
     "vit_b_16": 8.50,
     "vit_l_16": 25.43,
+    # Development-only dry-run placeholders. Live runs profile K=1 locally.
+    "vit_tiny": 2.00,
     "vgg19":    7.562,
+    "yolo11s":  5.00,
 }
 
 

@@ -16,6 +16,7 @@ from typing import Callable, Iterable, List, Tuple
 import torch
 import torch.nn as nn
 
+from src.models.yolo11 import YOLO11_LIVE_KEYS, Yolo11StateChunk, Yolo11s
 from src.splitting.critical_split import make_critical_full_chunks
 
 
@@ -577,6 +578,64 @@ def _vit_b_16_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
     return _vit_16_dag_aligned(model)
 
 
+def _yolo11s_dag_aligned(model: nn.Module) -> List[DagAlignedChunkSpec]:
+    """YOLO11s top-level module universe with packed live-state handoff.
+
+    YOLO's backbone/PAN/Detect graph has long-lived P3/P4/P5 route tensors.
+    The runtime pipeline currently connects one output tensor to one input
+    tensor, so each wrapper flattens and concatenates every live feature at a
+    boundary.  The next wrapper deterministically unpacks the state.  This
+    keeps the existing ONNX exporter, interval cache, and C++ runner generic.
+    """
+    if not isinstance(model, Yolo11s):
+        raise TypeError(f"yolo11s chunker expected Yolo11s, got {type(model)!r}")
+
+    roles = [
+        "Conv+SiLU stride-2 stem",
+        "Conv+SiLU stride-2 stem",
+        "C3k2 backbone block",
+        "Conv+SiLU stride-2 downsample",
+        "C3k2 backbone P3 route source",
+        "Conv+SiLU stride-2 downsample",
+        "C3k2 backbone P4 route source",
+        "Conv+SiLU stride-2 downsample",
+        "C3k2 backbone block",
+        "SPPF",
+        "C2PSA backbone P5 route source",
+        "nearest-neighbor upsample",
+        "P5-upsample/P4-route concat",
+        "C3k2 PAN P4 block",
+        "nearest-neighbor upsample",
+        "PAN-P4/P3-route concat",
+        "C3k2 Detect P3 source",
+        "Conv+SiLU stride-2 PAN downsample",
+        "PAN downsample/P4 concat",
+        "C3k2 Detect P4 source",
+        "Conv+SiLU stride-2 PAN downsample",
+        "PAN downsample/P5 concat",
+        "C3k2 Detect P5 source",
+        "three-scale Detect + DFL decode",
+    ]
+    route_members = {11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
+    chunks: List[tuple[str, nn.Module, str, List[str], List[str], str, str, str]] = []
+    for i, role in enumerate(roles):
+        live = ",".join(f"model.{key}" for key in YOLO11_LIVE_KEYS[i])
+        reason = "YOLO11 top-level architecture-module boundary"
+        if i in route_members:
+            reason = "YOLO11 PAN route-stage member; policy groups route internals"
+        chunks.append((
+            f"model_{i}",
+            Yolo11StateChunk(model, i),
+            f"model.{i}/{role}",
+            [f"model_{i}"],
+            [f"model.{i}"],
+            type(model.model[i]).__name__ if i not in (12, 15, 18, 21) else "call_function.cat",
+            reason,
+            f"Single-tensor packed live state after this module: [{live}].",
+        ))
+    return _execute_chain_specs(chunks, (1, 3, 640, 640))
+
+
 _DAG_ALIGNED_CHUNKERS: dict[str, Callable[[nn.Module], List[DagAlignedChunkSpec]]] = {
     "alexnet": _alexnet_dag_aligned,
     "inception_v3": _inception_v3_dag_aligned,
@@ -585,7 +644,9 @@ _DAG_ALIGNED_CHUNKERS: dict[str, Callable[[nn.Module], List[DagAlignedChunkSpec]
     "vit": _vit_b_16_dag_aligned,
     "vit_b_16": _vit_b_16_dag_aligned,
     "vit_l_16": _vit_l_16_dag_aligned,
+    "vit_tiny": _vit_b_16_dag_aligned,
     "vgg19": _vgg19_dag_aligned,
+    "yolo11s": _yolo11s_dag_aligned,
 }
 
 
