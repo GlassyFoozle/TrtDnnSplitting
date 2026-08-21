@@ -50,6 +50,10 @@ python -m pip install -r requirements.txt
 python -m pip install pytest
 ```
 
+The optional `vit_tiny` and `yolo11s` experiments use local
+PyTorch model definitions. They do not require timm, Ultralytics, or a network
+download of model weights.
+
 Verify the environment:
 
 ```bash

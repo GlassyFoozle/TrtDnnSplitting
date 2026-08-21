@@ -44,6 +44,30 @@ The no-inflation controls default to
 `TRT_RAW_INTERVAL_TIMING=1`, `TRT_DISABLE_MONOTONIC_INFLATION=1`, and
 `MONOTONIC_K_SPLIT_CACHE=0`. Do not override them for the canonical run.
 
+## Optional ViT-Tiny and YOLO11s models
+
+`vit_tiny` and `yolo11s` are registered model keys. They are
+not added to the default six-model experiment, so select them explicitly:
+
+```bash
+CONFIGS_OVERRIDE=1_base.yaml \
+MODELS_OVERRIDE="vit_tiny yolo11s" \
+UTILIZATIONS_OVERRIDE=0.5 \
+NUM_TASKSETS=1 \
+RUN_LABEL=smoke_vit_tiny_yolo11s \
+./run_hayeonp_no_inflation.sh
+```
+
+The checkout includes both baseline split-config JSON files and the
+`trt_fusion_safe` allowlists. It does not include device-specific ONNX, engine,
+timing, or experiment-result files. On the first run, the normal lazy cache path
+exports and profiles the required intervals on that device. YOLO route features
+are packed into one deterministic boundary tensor so they remain compatible
+with the existing single-input/single-output runtime.
+
+See `docs/VIT_TINY_YOLO11S.md` for the complete boundary index map and model
+semantics.
+
 ## Generated data
 
 ```text

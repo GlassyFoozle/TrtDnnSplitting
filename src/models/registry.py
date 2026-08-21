@@ -9,17 +9,23 @@ Supported models:
   vit / vit_b_16 — Vision Transformer base, patch 16, torchvision
   inception_v3 — InceptionV3, torchvision
   mobilenet_v3_small — MobileNetV3-Small, torchvision
+  vit_tiny — ViT-Tiny/16 (192-dim, 12 blocks), torchvision primitives
+  yolo11s — YOLO11s detection graph, local dependency-free inference implementation
   inceptionv4 — NOT AVAILABLE: requires timm, which is not installed on this system
                 (JetPack 6.0 / L4T R36.3 environment). Framework is ready; install
                 timm and add an entry here when the dependency becomes available.
 """
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Callable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torchvision.models as tvm
+from torchvision.models.vision_transformer import VisionTransformer
+
+from src.models.yolo11 import build_yolo11s
 
 
 @dataclass
@@ -43,6 +49,25 @@ def _with_nonzero_classifier_head(model: nn.Module) -> nn.Module:
                     if module.bias is not None:
                         module.bias.zero_()
     return model.eval()
+
+
+def _build_vit_tiny_patch16_224() -> nn.Module:
+    """Build a deterministic timm-compatible ViT-Tiny/16 architecture."""
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(1619224)
+        model = VisionTransformer(
+            image_size=224,
+            patch_size=16,
+            num_layers=12,
+            num_heads=3,
+            hidden_dim=192,
+            mlp_dim=768,
+            dropout=0.0,
+            attention_dropout=0.0,
+            num_classes=1000,
+            norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        )
+        return _with_nonzero_classifier_head(model)
 
 
 def _make_registry() -> dict:
@@ -123,6 +148,27 @@ def _make_registry() -> dict:
                 "with squeeze-excitation and hardswish activations."
             ),
             available=hasattr(tvm, "mobilenet_v3_small"),
+        ),
+        "vit_tiny": ModelInfo(
+            name="vit_tiny",
+            constructor=_build_vit_tiny_patch16_224,
+            input_shape=(1, 3, 224, 224),
+            notes=(
+                "ViT-Tiny/16; 192 hidden dimensions, 3 heads, 12 encoder blocks. "
+                "Built from torchvision VisionTransformer primitives with deterministic "
+                "synthetic weights and exported at the repository-wide ONNX opset 17."
+            ),
+            available=True,
+        ),
+        "yolo11s": ModelInfo(
+            name="yolo11s",
+            constructor=build_yolo11s,
+            input_shape=(1, 3, 640, 640),
+            notes=(
+                "YOLO11s detect architecture; local PyTorch inference implementation with "
+                "deterministic synthetic weights, three-scale Detect/DFL output, and no NMS."
+            ),
+            available=True,
         ),
         "inceptionv4": ModelInfo(
             name="inceptionv4",

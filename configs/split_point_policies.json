@@ -135,5 +135,39 @@
       "major_blocks": "Patch/class/position prep, four groups of six encoder blocks, and final norm/head.",
       "transformer_blocks": "All encoder block boundaries; recommended after compile compatibility is confirmed."
     }
+  },
+
+  "vit_tiny": {
+    "_N": 14,
+    "_boundaries": 13,
+    "all": [0,1,2,3,4,5,6,7,8,9,10,11,12],
+    "paper_like": [0,1,2,3,4,5,6,7,8,9,10,11,12],
+    "stage": [0,4,8,12],
+    "five_points": [0,3,6,9,12],
+    "ten_points": [0,1,2,3,4,5,6,7,8,9,12],
+    "major_blocks": [0,4,8,12],
+    "transformer_blocks": [0,1,2,3,4,5,6,7,8,9,10,11,12],
+    "trt_fusion_safe": [0,1,2,3,4,5,6,7,8,9,10,11,12],
+    "_notes": {
+      "major_blocks": "Patch/class/position prep, three groups of four encoder blocks, and final norm/head.",
+      "trt_fusion_safe": "All architecture-defined ViT-Tiny/16 block boundaries; encoder-block internals remain grouped."
+    }
+  },
+
+  "yolo11s": {
+    "_N": 24,
+    "_boundaries": 23,
+    "all": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22],
+    "stage": [1,4,6,10,13,16,19,22],
+    "five_points": [4,6,10,16,22],
+    "ten_points": [1,2,4,6,8,10,13,16,19,22],
+    "major_blocks": [1,4,6,10,13,16,19,22],
+    "trt_fusion_safe": [0,1,2,3,4,5,6,7,8,9,10,13,16,19,22],
+    "_notes": {
+      "all": "All 23 top-level architecture boundaries. Multi-value YOLO route state is packed into one deterministic boundary tensor for the existing runtime.",
+      "stage": "Stem/backbone stage exits followed by PAN and Detect scale exits.",
+      "major_blocks": "Backbone resolution stages, C2PSA exit, PAN C3k2 exits, and Detect handoff.",
+      "trt_fusion_safe": "Conv/SiLU, C3k2, SPPF, C2PSA and Detect internals remain grouped; four Resize-or-downsample/Concat/C3k2 route stages remain atomic."
+    }
   }
 }

@@ -41,6 +41,25 @@ See [`docs/RUN_HAYEONP_NO_INFLATION.md`](docs/RUN_HAYEONP_NO_INFLATION.md) for
 the complete procedure, cache semantics, environment overrides, output layout,
 and recovery instructions.
 
+Two additional, opt-in model keys are available without changing the canonical
+six-model run:
+
+```bash
+CONFIGS_OVERRIDE=1_base.yaml \
+MODELS_OVERRIDE="vit_tiny yolo11s" \
+UTILIZATIONS_OVERRIDE=0.5 \
+NUM_TASKSETS=1 \
+RUN_LABEL=smoke_vit_tiny_yolo11s \
+./run_hayeonp_no_inflation.sh
+```
+
+Their deterministic PyTorch constructors, DAG-aligned baseline metadata, and
+`trt_fusion_safe` policies are versioned in the repository. A fresh target
+therefore generates its own ONNX chunks, TensorRT engines, and timing cache in
+the same way as the original models; no timm or Ultralytics package is needed.
+See [`docs/VIT_TINY_YOLO11S.md`](docs/VIT_TINY_YOLO11S.md) for the exact indexed
+boundaries and grouping rationale.
+
 ## Experiment scope
 
 - Models: AlexNet, ResNet18, ViT-B/16, VGG19, InceptionV3, MobileNetV3-Small
@@ -79,6 +98,7 @@ DNNSplitting repository is required.
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md): common failures
 - [`docs/E2E_ARCHITECTURE.md`](docs/E2E_ARCHITECTURE.md): source and artifact data flow
 - [`docs/report_trt_fusion_safe_model_summary_ko.md`](docs/report_trt_fusion_safe_model_summary_ko.md): split-policy rationale
+- [`docs/VIT_TINY_YOLO11S.md`](docs/VIT_TINY_YOLO11S.md): ViT-Tiny and YOLO11s boundaries and fresh-device usage
 
 ## Tests
 
